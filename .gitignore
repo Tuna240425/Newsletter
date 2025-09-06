@@ -1,0 +1,5 @@
+# 환경 변수 파일
+.env
+*.pyc
+__pycache__/
+newsletter_env/
