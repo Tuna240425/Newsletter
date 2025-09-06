@@ -13,6 +13,63 @@ import time
 import random
 import re
 from urllib.parse import urljoin, urlparse
+import xml.etree.ElementTree as ET
+from urllib.parse import urlparse, parse_qs, quote
+
+
+
+NAVER_RSS = {
+    "society": "https://news.naver.com/rss/section/102.xml",
+    "economy": "https://news.naver.com/rss/section/101.xml",
+    "culture": "https://news.naver.com/rss/section/103.xml",
+}
+
+DAUM_RSS = {
+    "society": "https://news.daum.net/rss/society",
+    "economy": "https://news.daum.net/rss/economic",
+    "culture": "https://news.daum.net/rss/culture",
+}
+
+GOOGLE_RSS_QUERIES = {
+    "society": [
+        "법원 OR 판결 OR 소송",
+        "노동법 OR 근로기준법",
+    ],
+    "economy": [
+        "공정거래법 OR 공정위",
+        "개인정보보호법 OR 전자상거래법",
+    ],
+    "culture": [
+        "저작권법 OR 명예훼손",
+        "청소년보호법 OR 정보통신망법",
+    ],
+}
+
+class NewsCollector:
+    # ... (기존 코드 유지)
+
+    def get_naver_rss(self, count=5):
+        news = []
+        per_cat = max(1, count // 3)
+        for cat, url in NAVER_RSS.items():
+            if len(news) >= count:
+                break
+            got = self._rss_fetch(url, "naver", cat, per_cat)
+            news.extend(got)
+            time.sleep(random.uniform(0.5, 1.2))
+        return news[:count]
+
+    def get_daum_rss(self, count=5):
+        news = []
+        per_cat = max(1, count // 3)
+        for cat, url in DAUM_RSS.items():
+            if len(news) >= count:
+                break
+            got = self._rss_fetch(url, "daum", cat, per_cat)
+            news.extend(got)
+            time.sleep(random.uniform(0.5, 1.2))
+        return news[:count]
+
 
 class NewsCollector:
     def __init__(self):
@@ -21,6 +78,61 @@ class NewsCollector:
         }
         self.session = requests.Session()
         self.session.headers.update(self.headers)
+        
+    def _extract_google_link(self, link: str) -> str:
+        """Google News RSS 링크에서 실제 기사 URL 추출"""
+        try:
+            p = urlparse(link)
+            if "news.google.com" in p.netloc:
+                qs = parse_qs(p.query)
+                if "url" in qs and qs["url"]:
+                    return qs["url"][0]
+        except:
+            pass
+        return link
+
+    def _rss_fetch_google(self, url: str, category: str, limit: int):
+        """단일 Google RSS URL에서 기사 최대 limit개 가져오기"""
+        try:
+            r = self.session.get(url, timeout=10)
+            r.raise_for_status()
+            root = ET.fromstring(r.text)
+            items = []
+            for item in root.findall(".//item")[:limit * 3]:
+                title = self.clean_news_title(item.findtext("title") or "")
+                link = (item.findtext("link") or "").strip()
+                link = self._extract_google_link(link)
+                if self.is_valid_news(title, link, items):
+                    items.append({
+                        "title": title,
+                        "url": link,
+                        "date": datetime.now().strftime("%Y.%m.%d"),
+                        "category": category,
+                        "source": "google"
+                    })
+            return items[:limit]
+        except Exception as e:
+            print(f"Google RSS 수집 오류: {e}")
+            return []
+
+    def get_google_rss(self, count=5):
+        """카테고리별 Google News RSS에서 고르게 수집"""
+        news = []
+        per_cat = max(1, count // max(1, len(GOOGLE_RSS_QUERIES)))
+        for cat, queries in GOOGLE_RSS_QUERIES.items():
+            if len(news) >= count:
+                break
+            got_cat = 0
+            for q in queries:
+                if got_cat >= per_cat or len(news) >= count:
+                    break
+                rss_url = f"https://news.google.com/rss/search?q={quote(q)}&hl=ko&gl=KR&ceid=KR:ko"
+                got = self._rss_fetch_google(rss_url, cat, limit=per_cat - got_cat)
+                news.extend(got)
+                got_cat += len(got)
+                time.sleep(random.uniform(0.4, 1.0))
+        return news[:count]
+
     
     def get_naver_news(self, category='society', count=5):
         """네이버 뉴스에서 카테고리별 뉴스 수집"""
@@ -358,55 +470,56 @@ class NewsCollector:
         return enhanced_news
     
     def collect_weekly_news(self, count=5):
+        """주간 뉴스 수집 (Google RSS 우선)"""
         print("법률 관련 뉴스 수집을 시작합니다...")
 
         all_news = []
 
-        # 1) RSS 우선
-        naver_rss = self.get_naver_rss(count=count)
-        all_news.extend(naver_rss)
-        print(f"네이버 RSS: {len(naver_rss)}개")
+        # 1) Google News RSS 우선
+        g = self.get_google_rss(count=count)
+        all_news.extend(g)
+        print(f"Google RSS: {len(g)}개")
 
+        # 2) 부족하면 기존 HTML 크롤러 보충(있으면 사용)
         if len(all_news) < count:
-            need = count - len(all_news)
-            daum_rss = self.get_daum_rss(count=need)
-            all_news.extend(daum_rss)
-            print(f"다음 RSS: {len(daum_rss)}개 추가")
-
-        # 2) 그래도 부족하면 기존 HTML 스크래핑 (당신의 기존 함수 재사용)
-        if len(all_news) < count:
-            need = count - len(all_news)
             try:
+                need = count - len(all_news)
                 extra = self.get_naver_news(count=need)
                 all_news.extend(extra)
-                print(f"네이버 HTML: {len(extra)}개 추가")
+                print(f"네이버 HTML: {len(extra)}개")
             except Exception as e:
                 print("네이버 HTML 수집 실패:", e)
 
         if len(all_news) < count:
-            need = count - len(all_news)
             try:
+                need = count - len(all_news)
                 extra = self.get_daum_news(count=need)
                 all_news.extend(extra)
-                print(f"다음 HTML: {len(extra)}개 추가")
+                print(f"다음 HTML: {len(extra)}개")
             except Exception as e:
                 print("다음 HTML 수집 실패:", e)
 
-        # 3) 마지막 보충
+        # 3) 그래도 부족하면 fallback
         if len(all_news) < count:
             fallback = self.get_fallback_news()
             all_news.extend(fallback[:count - len(all_news)])
             print("fallback으로 보충")
 
-        # 중복 제거 + 중요도 점수 + 상위 N개
+        # 중복 제거
         unique, seen = [], set()
         for it in all_news:
-            if it["title"] in seen: continue
-            seen.add(it["title"]); unique.append(it)
+            if it["title"] not in seen:
+                unique.append(it)
+                seen.add(it["title"])
+
+        # 중요도 점수 후 상위 N개
         enhanced = self.enhance_news_with_keywords(unique)
         final = enhanced[:count]
         print(f"최종 {len(final)}개 뉴스 수집 완료")
         return final
+
+
+
 
     
     def get_news_by_keyword(self, keyword, count=3):
