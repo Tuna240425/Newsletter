@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timedelta
 import json
 import re
+import unicodedata
 import requests
 from urllib.parse import urlparse, quote  # ← quote 추가
 import xml.etree.ElementTree as ET
@@ -482,19 +483,20 @@ def generate_news_items_html(news_items):
         """
     return html
 
-def send_newsletter_alternative(recipients, subject, html_content, smtp_settings):
-    """뉴스레터 발송 - 인코딩 문제 직접 해결"""
-    import re
-    import unicodedata
+# 기존 send_newsletter 함수를 이것으로 교체
+def send_newsletter(recipients, subject, html_content, smtp_settings):
+    """뉴스레터 발송 - 인코딩 문제 해결"""
     
     def clean_text(text):
-        """특수 공백 문자 정리"""
+        """특수 공백 문자와 인코딩 문제 해결"""
         if not text:
             return ""
         # non-breaking space와 기타 특수 공백 제거
         text = re.sub(r'[\u00a0\u2000-\u200b\u202f\u205f\u3000]', ' ', text)
         # 유니코드 정규화
         text = unicodedata.normalize('NFKC', text)
+        # 연속된 공백을 하나로
+        text = re.sub(r'\s+', ' ', text)
         return text.strip()
     
     try:
@@ -512,10 +514,11 @@ def send_newsletter_alternative(recipients, subject, html_content, smtp_settings
         for recipient in recipients:
             try:
                 # 받는 사람 이메일 주소 정리
-                clean_recipient = clean_text(recipient)
+                clean_recipient = clean_text(recipient).replace(' ', '')  # 이메일은 공백 완전 제거
+                clean_sender_name = clean_text(smtp_settings['sender_name'])
                 
                 msg = MIMEMultipart('alternative')
-                msg['From'] = f"{clean_text(smtp_settings['sender_name'])} <{smtp_settings['email']}>"
+                msg['From'] = f"{clean_sender_name} <{smtp_settings['email']}>"
                 msg['To'] = clean_recipient
                 msg['Subject'] = clean_subject
                 
@@ -523,13 +526,14 @@ def send_newsletter_alternative(recipients, subject, html_content, smtp_settings
                 html_part = MIMEText(clean_html, 'html', 'utf-8')
                 msg.attach(html_part)
                 
-                # 텍스트 버전도 추가 (선택사항)
+                # 텍스트 버전 추가 (호환성 향상)
                 text_content = "이 메일은 HTML 형식입니다. HTML을 지원하는 메일 클라이언트에서 확인해주세요."
                 text_part = MIMEText(text_content, 'plain', 'utf-8')
                 msg.attach(text_part)
                 
                 server.send_message(msg)
                 sent_count += 1
+                
             except Exception as e:
                 failed_emails.append(f"{recipient}: {str(e)}")
         
