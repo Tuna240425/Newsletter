@@ -487,68 +487,79 @@ def generate_news_items_html(news_items):
 # (send_email_direct 함수는 필요 없습니다)
 
 def send_newsletter(recipients, subject, html_content, smtp_settings):
-    """뉴스레터 발송 - 인코딩 문제 해결"""
+    """뉴스레터 발송 - 간단하고 확실한 방법"""
     
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
     import re
-    import unicodedata
-    from email.message import EmailMessage
-    from email.header import Header
-    from email.utils import formataddr
     
-    def clean_text(text):
-        """특수 공백과 문제가 되는 문자들 정리"""
+    def simple_clean(text):
+        """간단한 텍스트 정리"""
         if not text:
             return ""
-        # non-breaking space(\xa0) 등 특수 공백 제거
-        text = re.sub(r'[\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]', ' ', text)
-        # 유니코드 정규화
-        text = unicodedata.normalize('NFKC', text)
-        # 연속 공백 정리
+        # 특수 공백만 일반 공백으로 변경
+        text = text.replace('\u00a0', ' ')  # non-breaking space
+        text = text.replace('\u2000', ' ')  # en quad
+        text = text.replace('\u2001', ' ')  # em quad
+        text = text.replace('\u2002', ' ')  # en space
+        text = text.replace('\u2003', ' ')  # em space
+        text = text.replace('\u2004', ' ')  # three-per-em space
+        text = text.replace('\u2005', ' ')  # four-per-em space
+        text = text.replace('\u2006', ' ')  # six-per-em space
+        text = text.replace('\u2007', ' ')  # figure space
+        text = text.replace('\u2008', ' ')  # punctuation space
+        text = text.replace('\u2009', ' ')  # thin space
+        text = text.replace('\u200a', ' ')  # hair space
+        text = text.replace('\u200b', '')   # zero width space
+        text = text.replace('\u3000', ' ')  # ideographic space
+        text = text.replace('\ufeff', '')   # zero width no-break space
+        # 연속 공백을 하나로
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
     
-    def clean_email(email):
-        """이메일 주소 정리"""
-        email = clean_text(email)
-        email = email.replace(' ', '')  # 이메일에서 모든 공백 제거
-        # 제로폭 문자 제거
-        email = re.sub(r'[\u200b-\u200d\ufeff]', '', email)
-        return email
-    
     try:
+        # SMTP 자격증명 정리
+        clean_server = simple_clean(smtp_settings['server'])
+        clean_email = simple_clean(smtp_settings['email']).replace(' ', '')
+        clean_password = simple_clean(smtp_settings['password'])
+        clean_sender_name = simple_clean(smtp_settings['sender_name'])
+        
         # SMTP 연결
-        server = smtplib.SMTP(smtp_settings['server'], smtp_settings['port'])
+        server = smtplib.SMTP(clean_server, smtp_settings['port'])
         server.starttls()
-        server.login(smtp_settings['email'], smtp_settings['password'])
+        server.login(clean_email, clean_password)
         
         sent_count = 0
         failed_emails = []
         
-        # 모든 텍스트 미리 정리
-        clean_subject = clean_text(subject)
-        clean_html = clean_text(html_content)
-        clean_sender_name = clean_text(smtp_settings['sender_name'])
-        clean_sender_email = clean_email(smtp_settings['email'])
+        # 메시지 내용 정리
+        clean_subject = simple_clean(subject)
+        clean_html = simple_clean(html_content)
         
         for recipient in recipients:
             try:
-                clean_recipient = clean_email(recipient)
+                clean_recipient = simple_clean(recipient).replace(' ', '')
                 
-                # EmailMessage 사용 (더 안전함)
-                msg = EmailMessage()
-                msg['Subject'] = Header(clean_subject, 'utf-8')
-                msg['From'] = formataddr((str(Header(clean_sender_name, 'utf-8')), clean_sender_email))
+                # 이메일 메시지 생성 - 가장 기본적인 방법
+                msg = MIMEMultipart('alternative')
+                
+                # 헤더 설정 - Header 클래스 사용하지 않음
+                msg['From'] = f"{clean_sender_name} <{clean_email}>"
                 msg['To'] = clean_recipient
+                msg['Subject'] = clean_subject  # 직접 할당
                 
                 # 텍스트 버전
                 text_content = f"제목: {clean_subject}\n\n이 메일은 HTML 형식입니다."
-                msg.set_content(text_content, charset='utf-8')
+                text_part = MIMEText(simple_clean(text_content), 'plain', 'utf-8')
+                msg.attach(text_part)
                 
                 # HTML 버전
-                msg.add_alternative(clean_html, subtype='html', charset='utf-8')
+                html_part = MIMEText(clean_html, 'html', 'utf-8')
+                msg.attach(html_part)
                 
                 # 전송
-                server.send_message(msg, from_addr=clean_sender_email, to_addrs=[clean_recipient])
+                server.sendmail(clean_email, [clean_recipient], msg.as_string())
                 sent_count += 1
                 
             except Exception as e:
@@ -559,6 +570,17 @@ def send_newsletter(recipients, subject, html_content, smtp_settings):
     
     except Exception as e:
         return 0, [f"SMTP 연결 오류: {str(e)}"]
+
+    
+def clean_email(email):
+    """이메일 주소 정리"""
+    email = clean_text(email)
+    email = email.replace(' ', '')  # 이메일에서 모든 공백 제거
+    # 제로폭 문자 제거
+    email = re.sub(r'[\u200b-\u200d\ufeff]', '', email)
+    return email 
+
+# (불필요한 중복 SMTP 코드 블록 제거됨)
     
 # 메인 앱
 def main():
