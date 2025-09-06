@@ -8,6 +8,60 @@ from datetime import datetime
 import json
 import re
 
+# newsletter_app.py 상단에 추가할 부분
+
+# ==============================================
+# 회사별 기본 설정 - 여기서 한 번만 수정하세요
+# ==============================================
+
+COMPANY_CONFIG = {
+    # 회사 정보
+    'company_name': '법률사무소',
+    'company_email': 'your-company@gmail.com',
+    'company_password': 'your-app-password',  # 주의: 실제 배포시 secrets 사용 권장
+    
+    # SMTP 설정
+    'smtp_server': 'smtp.gmail.com',
+    'smtp_port': 587,
+    
+    # 기본 메시지
+    'default_subject_template': '[{company_name}] 법률 뉴스레터 - {date}',
+    'default_greeting': '안녕하세요, 귀하의 법률사무소 소식을 전해 드립니다.',
+    'footer_message': '더 자세한 상담이 필요하시면 언제든 연락주세요.',
+    
+    # 자동 로드 설정
+    'auto_load_settings': True,  # True로 설정하면 앱 시작시 자동으로 SMTP 설정 로드
+    'skip_smtp_test': False  # True로 설정하면 SMTP 연결 테스트 생략
+}
+
+def auto_configure_smtp():
+    """앱 시작시 자동으로 SMTP 설정을 로드하는 함수"""
+    if COMPANY_CONFIG['auto_load_settings']:
+        auto_settings = {
+            'server': COMPANY_CONFIG['smtp.gmail.com'],
+            'port': COMPANY_CONFIG['587'],
+            'email': COMPANY_CONFIG['official.haedeun@gmail.com'],
+            'password': COMPANY_CONFIG['wsbn vanl ywza ochf'],
+            'sender_name': COMPANY_CONFIG['임앤리 법률사무소']
+        }
+        
+        # 세션 상태에 자동으로 저장
+        if 'newsletter_data' in st.session_state:
+            st.session_state.newsletter_data['email_settings'] = auto_settings
+            
+        return auto_settings
+    return None
+
+# main() 함수 시작 부분에 추가
+def main():
+    st.markdown('<div class="main-header"><h1>임앤리법률사무소 뉴스레터 발송 시스템</h1></div>', 
+                unsafe_allow_html=True)
+    
+    # 자동 설정 로드
+    auto_configure_smtp()
+    
+    
+    
 # 페이지 설정
 st.set_page_config(
     page_title="법률사무소 뉴스레터 발송 시스템",
@@ -383,7 +437,8 @@ def main():
                         'server': smtp_server,
                         'port': int(smtp_port),
                         'email': sender_email,
-                        'password': sender_password
+                        'password': sender_password,
+                        'sender_name': sender_name
                     }
                     
                     # 설정 테스트
