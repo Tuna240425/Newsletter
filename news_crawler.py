@@ -358,59 +358,56 @@ class NewsCollector:
         return enhanced_news
     
     def collect_weekly_news(self, count=5):
-        """주간 뉴스 수집 (메인 함수)"""
         print("법률 관련 뉴스 수집을 시작합니다...")
-        
+
         all_news = []
-        
-        # 1차: 네이버 뉴스 수집
-        try:
-            naver_news = self.get_naver_news(count=count)
-            all_news.extend(naver_news)
-            print(f"네이버에서 {len(naver_news)}개 뉴스 수집")
-        except Exception as e:
-            print(f"네이버 뉴스 수집 실패: {e}")
-        
-        # 2차: 다음 뉴스 수집 (부족한 경우)
+
+        # 1) RSS 우선
+        naver_rss = self.get_naver_rss(count=count)
+        all_news.extend(naver_rss)
+        print(f"네이버 RSS: {len(naver_rss)}개")
+
         if len(all_news) < count:
+            need = count - len(all_news)
+            daum_rss = self.get_daum_rss(count=need)
+            all_news.extend(daum_rss)
+            print(f"다음 RSS: {len(daum_rss)}개 추가")
+
+        # 2) 그래도 부족하면 기존 HTML 스크래핑 (당신의 기존 함수 재사용)
+        if len(all_news) < count:
+            need = count - len(all_news)
             try:
-                needed = count - len(all_news)
-                daum_news = self.get_daum_news(count=needed)
-                all_news.extend(daum_news)
-                print(f"다음에서 {len(daum_news)}개 뉴스 추가 수집")
+                extra = self.get_naver_news(count=need)
+                all_news.extend(extra)
+                print(f"네이버 HTML: {len(extra)}개 추가")
             except Exception as e:
-                print(f"다음 뉴스 수집 실패: {e}")
-        
-        # 3차: 여전히 부족하면 기본 뉴스 추가
+                print("네이버 HTML 수집 실패:", e)
+
         if len(all_news) < count:
-            fallback_news = self.get_fallback_news()
-            needed = count - len(all_news)
-            all_news.extend(fallback_news[:needed])
-            print(f"기본 뉴스 {min(needed, len(fallback_news))}개 추가")
-        
-        # 뉴스 품질 향상
-        if all_news:
-            # 중복 제거
-            unique_news = []
-            seen_titles = set()
-            
-            for news in all_news:
-                if news['title'] not in seen_titles:
-                    unique_news.append(news)
-                    seen_titles.add(news['title'])
-            
-            # 법률 키워드 기반 중요도 추가
-            enhanced_news = self.enhance_news_with_keywords(unique_news)
-            
-            # 최종 개수 조정
-            final_news = enhanced_news[:count]
-            
-            print(f"최종 {len(final_news)}개 뉴스 수집 완료")
-            return final_news
-        
-        else:
-            print("뉴스 수집에 실패했습니다. 기본 뉴스를 반환합니다.")
-            return self.get_fallback_news()[:count]
+            need = count - len(all_news)
+            try:
+                extra = self.get_daum_news(count=need)
+                all_news.extend(extra)
+                print(f"다음 HTML: {len(extra)}개 추가")
+            except Exception as e:
+                print("다음 HTML 수집 실패:", e)
+
+        # 3) 마지막 보충
+        if len(all_news) < count:
+            fallback = self.get_fallback_news()
+            all_news.extend(fallback[:count - len(all_news)])
+            print("fallback으로 보충")
+
+        # 중복 제거 + 중요도 점수 + 상위 N개
+        unique, seen = [], set()
+        for it in all_news:
+            if it["title"] in seen: continue
+            seen.add(it["title"]); unique.append(it)
+        enhanced = self.enhance_news_with_keywords(unique)
+        final = enhanced[:count]
+        print(f"최종 {len(final)}개 뉴스 수집 완료")
+        return final
+
     
     def get_news_by_keyword(self, keyword, count=3):
         """특정 키워드로 뉴스 검색 (향후 확장용)"""

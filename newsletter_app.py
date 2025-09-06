@@ -932,7 +932,7 @@ def display_newsletter_editor():
                     
                     if st.button("🗑️ 삭제", key=f"delete_final_{i}"):
                         st.session_state.newsletter_data['news_items'].pop(i)
-                        st.experimental_rerun()
+                        st.rerun()
     
     # 수신자 선택
     st.subheader("👥 수신자 선택")

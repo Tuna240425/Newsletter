@@ -1,0 +1,46 @@
+{
+  "date": "2025-09-06",
+  "news": [
+    {
+      "title": "디지털 유산 상속 관련 법률 개정 논의 본격화",
+      "url": "https://www.moleg.go.kr",
+      "date": "2025.09.06",
+      "category": "culture",
+      "source": "fallback",
+      "importance": 4
+    },
+    {
+      "title": "개인정보보호법 개정안 주요 내용 및 기업 대응 방안",
+      "url": "https://www.law.go.kr",
+      "date": "2025.09.06",
+      "category": "society",
+      "source": "fallback",
+      "importance": 3
+    },
+    {
+      "title": "중소기업 법률 지원 확대, 무료 상담 서비스 확대 시행",
+      "url": "https://www.mss.go.kr",
+      "date": "2025.09.06",
+      "category": "economy",
+      "source": "fallback",
+      "importance": 3
+    },
+    {
+      "title": "온라인 계약서 법적 효력 인정 범위 대폭 확대",
+      "url": "https://www.korea.kr",
+      "date": "2025.09.06",
+      "category": "economy",
+      "source": "fallback",
+      "importance": 0
+    },
+    {
+      "title": "소상공인 법률 상담 신청 급증, 전문가 조언의 중요성 부각",
+      "url": "https://www.sbc.or.kr",
+      "date": "2025.09.06",
+      "category": "society",
+      "source": "fallback",
+      "importance": 0
+    }
+  ],
+  "timestamp": "2025-09-06T21:27:25.308919"
+}
