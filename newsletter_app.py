@@ -152,7 +152,7 @@ COMPANY_CONFIG = {
     # 회사 정보
     'company_name': '임앤리 법률사무소',
     'company_email': 'official.haedeun@gmail.com',
-    'company_password': 'wsbn vanl ywza ochf',  # 주의: 실제 배포시 secrets 사용 권장
+    'company_password': 'wsbn vanl ywza ochf',  # ← 수정: Â 문자 제거, 일반 공백으로 변경
     
     # SMTP 설정
     'smtp_server': 'smtp.gmail.com',
