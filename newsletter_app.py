@@ -482,8 +482,21 @@ def generate_news_items_html(news_items):
         """
     return html
 
-def send_newsletter(recipients, subject, html_content, smtp_settings):
-    """뉴스레터 발송"""
+def send_newsletter_alternative(recipients, subject, html_content, smtp_settings):
+    """뉴스레터 발송 - 인코딩 문제 직접 해결"""
+    import re
+    import unicodedata
+    
+    def clean_text(text):
+        """특수 공백 문자 정리"""
+        if not text:
+            return ""
+        # non-breaking space와 기타 특수 공백 제거
+        text = re.sub(r'[\u00a0\u2000-\u200b\u202f\u205f\u3000]', ' ', text)
+        # 유니코드 정규화
+        text = unicodedata.normalize('NFKC', text)
+        return text.strip()
+    
     try:
         server = smtplib.SMTP(smtp_settings['server'], smtp_settings['port'])
         server.starttls()
@@ -492,15 +505,28 @@ def send_newsletter(recipients, subject, html_content, smtp_settings):
         sent_count = 0
         failed_emails = []
         
+        # 제목과 HTML 내용 정리
+        clean_subject = clean_text(subject)
+        clean_html = clean_text(html_content)
+        
         for recipient in recipients:
             try:
-                msg = MIMEMultipart('alternative')
-                msg['From'] = f"{smtp_settings['sender_name']} <{smtp_settings['email']}>"
-                msg['To'] = recipient
-                msg['Subject'] = subject
+                # 받는 사람 이메일 주소 정리
+                clean_recipient = clean_text(recipient)
                 
-                html_part = MIMEText(html_content, 'html', 'utf-8')
+                msg = MIMEMultipart('alternative')
+                msg['From'] = f"{clean_text(smtp_settings['sender_name'])} <{smtp_settings['email']}>"
+                msg['To'] = clean_recipient
+                msg['Subject'] = clean_subject
+                
+                # HTML 파트 추가 (UTF-8 인코딩 명시)
+                html_part = MIMEText(clean_html, 'html', 'utf-8')
                 msg.attach(html_part)
+                
+                # 텍스트 버전도 추가 (선택사항)
+                text_content = "이 메일은 HTML 형식입니다. HTML을 지원하는 메일 클라이언트에서 확인해주세요."
+                text_part = MIMEText(text_content, 'plain', 'utf-8')
+                msg.attach(text_part)
                 
                 server.send_message(msg)
                 sent_count += 1
