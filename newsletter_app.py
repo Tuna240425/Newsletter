@@ -7,12 +7,12 @@ from email.mime.text import MIMEText
 import os
 from datetime import datetime, timedelta
 import json
-import re
-import unicodedata
 import requests
 from urllib.parse import urlparse, quote  # ← quote 추가
 import xml.etree.ElementTree as ET
 import random
+import re
+import unicodedata
 from datetime import datetime, date
 try:
     from zoneinfo import ZoneInfo  # Py>=3.9
@@ -483,23 +483,40 @@ def generate_news_items_html(news_items):
         """
     return html
 
-# 기존 send_newsletter 함수를 이것으로 교체
+# newsletter_app.py에서 기존 send_newsletter 함수를 이것으로 교체
+# (send_email_direct 함수는 필요 없습니다)
+
 def send_newsletter(recipients, subject, html_content, smtp_settings):
     """뉴스레터 발송 - 인코딩 문제 해결"""
     
+    import re
+    import unicodedata
+    from email.message import EmailMessage
+    from email.header import Header
+    from email.utils import formataddr
+    
     def clean_text(text):
-        """특수 공백 문자와 인코딩 문제 해결"""
+        """특수 공백과 문제가 되는 문자들 정리"""
         if not text:
             return ""
-        # non-breaking space와 기타 특수 공백 제거
-        text = re.sub(r'[\u00a0\u2000-\u200b\u202f\u205f\u3000]', ' ', text)
+        # non-breaking space(\xa0) 등 특수 공백 제거
+        text = re.sub(r'[\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]', ' ', text)
         # 유니코드 정규화
         text = unicodedata.normalize('NFKC', text)
-        # 연속된 공백을 하나로
+        # 연속 공백 정리
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
     
+    def clean_email(email):
+        """이메일 주소 정리"""
+        email = clean_text(email)
+        email = email.replace(' ', '')  # 이메일에서 모든 공백 제거
+        # 제로폭 문자 제거
+        email = re.sub(r'[\u200b-\u200d\ufeff]', '', email)
+        return email
+    
     try:
+        # SMTP 연결
         server = smtplib.SMTP(smtp_settings['server'], smtp_settings['port'])
         server.starttls()
         server.login(smtp_settings['email'], smtp_settings['password'])
@@ -507,31 +524,31 @@ def send_newsletter(recipients, subject, html_content, smtp_settings):
         sent_count = 0
         failed_emails = []
         
-        # 제목과 HTML 내용 정리
+        # 모든 텍스트 미리 정리
         clean_subject = clean_text(subject)
         clean_html = clean_text(html_content)
+        clean_sender_name = clean_text(smtp_settings['sender_name'])
+        clean_sender_email = clean_email(smtp_settings['email'])
         
         for recipient in recipients:
             try:
-                # 받는 사람 이메일 주소 정리
-                clean_recipient = clean_text(recipient).replace(' ', '')  # 이메일은 공백 완전 제거
-                clean_sender_name = clean_text(smtp_settings['sender_name'])
+                clean_recipient = clean_email(recipient)
                 
-                msg = MIMEMultipart('alternative')
-                msg['From'] = f"{clean_sender_name} <{smtp_settings['email']}>"
+                # EmailMessage 사용 (더 안전함)
+                msg = EmailMessage()
+                msg['Subject'] = Header(clean_subject, 'utf-8')
+                msg['From'] = formataddr((str(Header(clean_sender_name, 'utf-8')), clean_sender_email))
                 msg['To'] = clean_recipient
-                msg['Subject'] = clean_subject
                 
-                # HTML 파트 추가 (UTF-8 인코딩 명시)
-                html_part = MIMEText(clean_html, 'html', 'utf-8')
-                msg.attach(html_part)
+                # 텍스트 버전
+                text_content = f"제목: {clean_subject}\n\n이 메일은 HTML 형식입니다."
+                msg.set_content(text_content, charset='utf-8')
                 
-                # 텍스트 버전 추가 (호환성 향상)
-                text_content = "이 메일은 HTML 형식입니다. HTML을 지원하는 메일 클라이언트에서 확인해주세요."
-                text_part = MIMEText(text_content, 'plain', 'utf-8')
-                msg.attach(text_part)
+                # HTML 버전
+                msg.add_alternative(clean_html, subtype='html', charset='utf-8')
                 
-                server.send_message(msg)
+                # 전송
+                server.send_message(msg, from_addr=clean_sender_email, to_addrs=[clean_recipient])
                 sent_count += 1
                 
             except Exception as e:
@@ -542,7 +559,7 @@ def send_newsletter(recipients, subject, html_content, smtp_settings):
     
     except Exception as e:
         return 0, [f"SMTP 연결 오류: {str(e)}"]
-
+    
 # 메인 앱
 def main():
     # 자동 SMTP 설정 로드
