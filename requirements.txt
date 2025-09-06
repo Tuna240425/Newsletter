@@ -1,14 +1,3 @@
-# 법률사무소 뉴스레터 시스템 필수 라이브러리
-# Python 3.8+ 필요
-
-# 핵심 라이브러리 (필수)
-streamlit>=1.35.0
-pandas>=2.0.0
-requests>=2.31.0
-beautifulsoup4==4.12.2
-lxml==4.9.3
-email-validator==2.0.0
-
-# 선택적 라이브러리 (권장)
-html5lib==1.1
-python-dateutil==2.8.2
+streamlit
+pandas  
+requests
