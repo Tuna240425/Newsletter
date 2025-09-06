@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from mailer import send_email
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -10,6 +11,93 @@ import re
 import requests
 from urllib.parse import urlparse, quote  # ← quote 추가
 import xml.etree.ElementTree as ET
+import random
+from datetime import datetime, date
+try:
+    from zoneinfo import ZoneInfo  # Py>=3.9
+except ImportError:
+    ZoneInfo = None
+
+
+
+MESSAGE_BANK = {
+    "seasons": {
+        "spring": [
+            "새봄의 기운처럼 좋은 소식이 가득하시길 바랍니다. 🌱",
+            "따뜻한 봄바람과 함께 활력을 전합니다. 🌸",
+        ],
+        "summer": [
+            "무더위에도 건강 잘 챙기시고 시원한 한 주 보내세요. 🌊",
+            "뜨거운 여름, 시원한 소식과 함께 합니다. ☀️",
+        ],
+        "autumn": [
+            "풍성한 가을처럼 보람 가득한 나날 되세요. 🍁",
+            "선선한 바람 속에 좋은 결실 이루시길 바랍니다. 🍂",
+        ],
+        "winter": [
+            "따뜻하고 안전한 겨울 되세요. ❄️",
+            "포근한 하루 보내시고 건강 유의하세요. 🧣",
+        ],
+    },
+    "weekdays": {
+        0: ["힘찬 월요일 되세요! 새로운 시작을 응원합니다. 💪"],
+        1: ["화요일, 차근차근 목표에 다가가요. ✨"],
+        2: ["수요일, 주중의 중심! 한 걸음만 더. 🏃"],
+        3: ["목요일, 마무리 준비에 딱 좋은 날입니다. 📌"],
+        4: ["금요일, 한 주 잘 마무리하시고 편안한 주말 되세요. 🎉"],
+        5: ["토요일, 재충전과 쉼의 시간이 되길 바랍니다. ☕"],
+        6: ["일요일, 내일을 위한 휴식 가득한 하루 보내세요. 🌤️"],
+    },
+    "special_dates": {
+        # YYYY-MM-DD: [ ...messages... ]
+        "01-01": ["새해 복 많이 받으세요. 올 한 해도 든든히 함께하겠습니다. 🎊"],
+        "02-14": ["소중한 분들과 따뜻한 마음을 나누는 하루 되세요. 💝"],
+        "03-01": ["뜻깊은 3·1절, 감사와 존경의 마음을 전합니다."],
+        "05-05": ["가정의 달 5월, 사랑과 웃음이 가득하길 바랍니다. 👨‍👩‍👧‍👦"],
+        "06-06": ["호국보훈의 달, 감사와 추모의 마음을 전합니다."],
+        "10-09": ["한글날, 우리말의 아름다움을 함께 기립니다. 한 주도 파이팅!"],
+        "12-25": ["메리 크리스마스! 따뜻하고 즐거운 연말 되세요. 🎄"],
+        "12-31": ["한 해 동안 감사했습니다. 새해에도 늘 건강과 행복이 함께하길! 🎆"],
+    },
+}
+
+def _get_kst_now():
+    if ZoneInfo:
+        return datetime.now(ZoneInfo("Asia/Seoul"))
+    return datetime.now()  # fallback
+
+def _season_by_month(m: int) -> str:
+    # 간단 분기: 3~5 봄 / 6~8 여름 / 9~11 가을 / 그외 겨울
+    if 3 <= m <= 5: return "spring"
+    if 6 <= m <= 8: return "summer"
+    if 9 <= m <= 11: return "autumn"
+    return "winter"
+
+def pick_contextual_message(custom_bank: dict | None = None) -> str:
+    bank = custom_bank or MESSAGE_BANK
+    now = _get_kst_now()
+    mmdd = now.strftime("%m-%d")
+    weekday = now.weekday()  # Monday=0 ... Sunday=6
+    season_key = _season_by_month(now.month)
+
+    candidates = []
+
+    # 1) 특별일(있으면 최우선)
+    if mmdd in bank.get("special_dates", {}):
+        candidates.extend(bank["special_dates"][mmdd])
+
+    # 2) 시즌
+    candidates.extend(bank.get("seasons", {}).get(season_key, []))
+
+    # 3) 요일
+    candidates.extend(bank.get("weekdays", {}).get(weekday, []))
+
+    # 4) 후보가 하나도 없으면 기본 메시지
+    if not candidates:
+        candidates = ["늘 믿고 함께해주셔서 감사합니다. 좋은 하루 보내세요. 😊"]
+
+    return random.choice(candidates)
+
 
 def _extract_google_link(link: str) -> str:
     """Google News RSS가 중간 리다이렉트 링크를 줄 때 실제 기사 URL 추출"""
@@ -550,12 +638,31 @@ def main():
                 st.rerun()
             return
         
-        # 사용자 정의 메시지
+        # 뉴스레터 작성 메뉴 안쪽
+        if "last_random_message" not in st.session_state:
+            st.session_state.last_random_message = pick_contextual_message()
+
+        st.subheader("사용자 정의 메시지 (선택사항)")
+        col1, col2 = st.columns([1,1])
+
+        with col1:
+            if st.button("✨ 시즌·요일 메시지 추천"):
+                st.session_state.last_random_message = pick_contextual_message()
+                st.rerun()
+
+        with col2:
+            if st.button("🔄 랜덤 다시 뽑기"):
+                # 같은 카테고리 후보에서 그냥 한 번 더 뽑고 싶을 때
+                st.session_state.last_random_message = pick_contextual_message()
+                st.rerun()
+
         custom_message = st.text_area(
-            "사용자 정의 메시지 (선택사항)",
-            placeholder="고객에게 전달하고 싶은 특별한 메시지를 입력하세요...",
-            height=100
+            label="메시지",
+            value=st.session_state.last_random_message,
+            height=100,
+            help="버튼으로 추천 문구를 바꾼 뒤, 필요하면 직접 수정해서 사용하세요."
         )
+
         
         # 뉴스 선택
         st.subheader("📰 포함할 뉴스 선택")
