@@ -14,7 +14,11 @@ import random
 import re
 import unicodedata
 from datetime import datetime, date
-import openai
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 from dotenv import load_dotenv
 load_dotenv()  # .env 파일에서 환경변수 로드
 import hashlib
@@ -30,7 +34,7 @@ except ImportError:
 COMPANY_CONFIG = {
     # 회사 정보
     'company_name': '임앤리 법률사무소',
-    'company_email': 'official.haedeun@gmail.com',  # ← 수정됨
+    'company_email': 'lshlawfirm2@gmail.com',  # ← 수정됨
     'company_password': 'wsbn vanl ywza ochf',
     
     # 사무실 정보 (뉴스레터 하단에 표시)
@@ -158,7 +162,7 @@ def generate_ai_message(topic="법률", tone="친근한"):
         조건:
         - 주제: {topic}
         - 톤: {tone}
-        - 길이: 1-2문장
+        - 길이: 3문장
         - 한국어로 작성
         - 법률사무소 특성에 맞게
         - 오늘 날짜: {datetime.now().strftime('%Y년 %m월 %d일 %A')}
@@ -785,6 +789,31 @@ def main():
         menu_options.insert(-1, "📧 이메일 설정")
     
     menu = st.sidebar.selectbox("메뉴 선택", menu_options)
+    
+    # OpenAI 설정 (사이드바) - OpenAI가 설치되어 있고, 상단에서 미리 설정하지 않은 경우만 표시
+    if OPENAI_AVAILABLE and not COMPANY_CONFIG.get('openai_api_key'):
+        with st.sidebar.expander("🤖 AI 설정 (선택사항)"):
+            st.info("💡 상단 COMPANY_CONFIG에서 미리 설정하면 이 과정을 생략할 수 있습니다")
+            use_ai = st.checkbox("OpenAI API 사용", value=COMPANY_CONFIG.get('use_openai', False))
+            if use_ai:
+                api_key = st.text_input("OpenAI API 키", type="password", 
+                                       value=COMPANY_CONFIG.get('openai_api_key', ''))
+                if api_key:
+                    COMPANY_CONFIG['use_openai'] = True
+                    COMPANY_CONFIG['openai_api_key'] = api_key
+                    st.success("✅ AI 메시지 생성 활성화")
+                else:
+                    st.info("API 키를 입력하면 AI가 맞춤형 메시지를 생성합니다")
+            else:
+                COMPANY_CONFIG['use_openai'] = False
+    elif OPENAI_AVAILABLE and COMPANY_CONFIG.get('openai_api_key'):
+        # 상단에서 이미 설정된 경우
+        if COMPANY_CONFIG.get('use_openai'):
+            st.sidebar.success("🤖 AI 메시지 생성 활성화됨")
+        else:
+            st.sidebar.info("🤖 AI 설정 완료 (비활성화)")
+    elif not OPENAI_AVAILABLE:
+        st.sidebar.info("🤖 AI 기능: openai 모듈 미설치\n(pip install openai로 설치 가능)")
     
     
     if menu == "🏠 홈":
