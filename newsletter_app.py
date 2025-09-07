@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-from mailer import send_email
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -13,11 +12,18 @@ import xml.etree.ElementTree as ET
 import random
 import re
 import unicodedata
-from datetime import datetime, date
-import openai
-from dotenv import load_dotenv
-load_dotenv()  # .env 파일에서 환경변수 로드
 import hashlib
+import base64
+from dotenv import load_dotenv
+load_dotenv()
+
+
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
 try:
     from zoneinfo import ZoneInfo  # Py>=3.9
 except ImportError:
@@ -30,12 +36,12 @@ except ImportError:
 COMPANY_CONFIG = {
     # 회사 정보
     'company_name': '임앤리 법률사무소',
-    'company_email': 'official.haedeun@gmail.com',  # ← 수정됨
+    'company_email': 'official.haedeun@gmail.com',
     'company_password': 'wsbn vanl ywza ochf',
     
     # 사무실 정보 (뉴스레터 하단에 표시)
     'office_info': {
-        'address': '서울시 송파구 법원로92, 806호 (문정동, 파트너스1)',
+        'address': '서울시 송파구 법원로92, 806호(문정동, 파트너스1)',
         'phone': '02-3477-9650',
         'website': 'https://www.limleelawfirm.com/',
         'business_hours': '평일 09:00-18:00'
@@ -45,67 +51,95 @@ COMPANY_CONFIG = {
     'smtp_server': 'smtp.gmail.com',
     'smtp_port': 587,
     
-    # 뉴스 수집 설정
+    # 뉴스 수집 설정 (포괄적인 시사/사회/경제/법률 뉴스)
     'auto_collect_news': True,
     'default_news_sources': [
+        # 네이버 뉴스 RSS (전 섹션)
+        'https://news.naver.com/rss/section/100.xml',  # 정치
+        'https://news.naver.com/rss/section/101.xml',  # 경제
+        'https://news.naver.com/rss/section/102.xml',  # 사회
+        'https://news.naver.com/rss/section/103.xml',  # 생활/문화
+        
+        # 다음 뉴스 RSS
+        'https://news.daum.net/rss/politics',    # 정치
+        'https://news.daum.net/rss/economic',    # 경제
+        'https://news.daum.net/rss/society',     # 사회
+        
+        # Google News에서 한국 시사 뉴스 검색 (법률뿐만 아니라 전반적)
+        'https://news.google.com/rss/search?q=한국+정책&hl=ko&gl=KR&ceid=KR:ko',
+        'https://news.google.com/rss/search?q=경제+정책&hl=ko&gl=KR&ceid=KR:ko',
+        'https://news.google.com/rss/search?q=사회+정책&hl=ko&gl=KR&ceid=KR:ko',
         'https://news.google.com/rss/search?q=법률+개정&hl=ko&gl=KR&ceid=KR:ko',
-        'https://news.google.com/rss/search?q=법원+판결&hl=ko&gl=KR&ceid=KR:ko',
-        'https://news.google.com/rss/search?q=변호사+법무&hl=ko&gl=KR&ceid=KR:ko',
-        'https://news.google.com/rss/search?q=개인정보보호법&hl=ko&gl=KR&ceid=KR:ko',
-        'https://news.google.com/rss/search?q=부동산+법률&hl=ko&gl=KR&ceid=KR:ko',
+        'https://news.google.com/rss/search?q=규제+정책&hl=ko&gl=KR&ceid=KR:ko',
+        'https://news.google.com/rss/search?q=부동산+시장&hl=ko&gl=KR&ceid=KR:ko',
+        'https://news.google.com/rss/search?q=금융+정책&hl=ko&gl=KR&ceid=KR:ko',
+        'https://news.google.com/rss/search?q=조세+세법&hl=ko&gl=KR&ceid=KR:ko',
     ],
-    
+
     # 기본 메시지
     'default_subject_template': '[{company_name}] 법률 뉴스레터 - {date}',
     'default_greeting': '안녕하세요, 임앤리 법률사무소입니다. 최신 소식을 전해 드립니다.',
     'footer_message': '더 자세한 상담이 필요하시면 언제든 연락주세요.',
-    
+
     # 자동화 설정
     'skip_email_setup': True,
     'skip_smtp_test': True,
-    
-    # OpenAI API 설정 (보안을 위해 환경변수 사용)
-    'use_openai': True,  # True로 설정하면 OpenAI API 사용
-    'openai_api_key': os.getenv('OPENAI_API_KEY', ''),  # 환경변수에서 읽어옴
+
+    # OpenAI API 설정 (자동 설정으로 사용자가 신경쓸 필요 없음)
+    'use_openai': True,
+    'openai_api_key': os.getenv('OPENAI_API_KEY', ''),
+
+    # 디자인 설정
+    'newsletter_template': 'simple',
+    'use_newsletter_images': True,
+    'image_timeout': 3,
+    'fallback_to_gradient': True,
 }
+
+# 기본 주소록 데이터 (샘플)
+DEFAULT_ADDRESS_BOOK = [
+    {'이름': '김철수', '이메일': 'test1@example.com'},
+    {'이름': '이영희', '이메일': 'test2@example.com'},
+    {'이름': '박민수', '이메일': 'test3@example.com'},
+]
 
 MESSAGE_BANK = {
     "seasons": {
         "spring": [
-            "새봄의 기운처럼 좋은 소식이 가득하시길 바랍니다. 🌱",
-            "따뜻한 봄바람과 함께 활력을 전합니다. 🌸",
+            "새봄의 기운처럼 좋은 소식이 가득하시길 바랍니다.",
+            "따뜻한 봄바람과 함께 활력을 전합니다.",
         ],
         "summer": [
-            "무더위에도 건강 잘 챙기시고 시원한 한 주 보내세요. 🌊",
-            "뜨거운 여름, 시원한 소식과 함께 합니다. ☀️",
+            "무더위에도 건강 잘 챙기시고 시원한 한 주 보내세요.",
+            "뜨거운 여름, 시원한 소식과 함께 합니다.",
         ],
         "autumn": [
-            "풍성한 가을처럼 보람 가득한 날 되세요. 🍁",
-            "선선한 바람 속에 좋은 결실 이루시길 바랍니다. 🍂",
+            "풍성한 가을처럼 보람 가득한 날 되세요.",
+            "선선한 바람 속에 좋은 결실 이루시길 바랍니다.",
         ],
         "winter": [
-            "따뜻하고 안전한 겨울 되세요. ❄️",
-            "포근한 하루 보내시고 건강 유의하세요. 🧣",
+            "따뜻하고 안전한 겨울 되세요.",
+            "포근한 하루 보내시고 건강 유의하세요.",
         ],
     },
     "weekdays": {
-        0: ["힘찬 월요일 되세요! 새로운 시작을 응원합니다. 💪"],
-        1: ["화요일, 차근차근 목표에 다가가요. ✨"],
-        2: ["수요일, 주중의 중심! 한 걸음만 더. 🏃"],
-        3: ["목요일, 마무리 준비에 딱 좋은 날입니다. 📌"],
-        4: ["금요일, 한 주 잘 마무리하시고 편안한 주말 되세요. 🎉"],
-        5: ["토요일, 재충전과 쉼의 시간이 되길 바랍니다. ☕"],
-        6: ["일요일, 내일을 위한 휴식 가득한 하루 보내세요. 🌤️"],
+        0: ["힘찬 월요일 되세요! 새로운 시작을 응원합니다."],
+        1: ["화요일, 차근차근 목표에 다가가요."],
+        2: ["수요일, 주중의 중심! 한 걸음만 더."],
+        3: ["목요일, 마무리 준비에 딱 좋은 날입니다."],
+        4: ["금요일, 한 주 잘 마무리하시고 편안한 주말 되세요."],
+        5: ["토요일, 재충전과 쉼의 시간이 되길 바랍니다."],
+        6: ["일요일, 내일을 위한 휴식 가득한 하루 보내세요."],
     },
     "special_dates": {
-        "01-01": ["새해 복 많이 받으세요. 올 한 해도 더욱 든든히 함께하겠습니다. 🎊"],
-        "02-14": ["소중한 분들과 따뜻한 마음을 나누는 하루 되세요. 💝"],
+        "01-01": ["새해 복 많이 받으세요. 올 한 해도 더욱 더 든든히 함께하겠습니다."],
+        "02-14": ["소중한 분들과 따뜻한 마음을 나누는 하루 되세요."],
         "03-01": ["뜻깊은 3·1절, 감사와 존경의 마음을 전합니다."],
-        "05-05": ["가정의 달 5월, 사랑과 웃음이 가득하길 바랍니다. 👨‍👩‍👧‍👦"],
+        "05-05": ["가정의 달 5월, 사랑과 웃음이 가득하길 바랍니다."],
         "06-06": ["호국보훈의 달, 감사와 추모의 마음을 전합니다."],
         "10-09": ["한글날, 우리말의 아름다움을 함께 기립니다. 한 주도 파이팅!"],
-        "12-25": ["메리 크리스마스! 따뜻하고 즐거운 연말 되세요. 🎄"],
-        "12-31": ["한 해 동안 감사했습니다. 새해에도 늘 건강과 행복이 함께하길! 🎆"],
+        "12-25": ["메리 크리스마스! 따뜻하고 즐거운 연말 되세요."],
+        "12-31": ["한 해 동안 감사했습니다. 새해에도 늘 건강과 행복이 함께하길!"],
     },
 }
 
@@ -140,7 +174,7 @@ def pick_contextual_message(custom_bank: dict | None = None) -> str:
     candidates.extend(bank.get("weekdays", {}).get(weekday, []))
 
     if not candidates:
-        candidates = ["늘 믿고 함께해주셔서 감사합니다. 좋은 하루 보내세요. 😊"]
+        candidates = ["늘 믿고 함께해주셔서 감사합니다. 좋은 하루 보내세요."]
 
     return random.choice(candidates)
 
@@ -150,7 +184,7 @@ def generate_ai_message(topic="법률", tone="친근한"):
         return pick_contextual_message()
     
     try:
-        openai.api_key = COMPANY_CONFIG['openai_api_key']
+        client = OpenAI(api_key=COMPANY_CONFIG['openai_api_key'])
         
         prompt = f"""
         {COMPANY_CONFIG['company_name']}의 {tone} 뉴스레터 인사말을 작성해주세요.
@@ -158,60 +192,141 @@ def generate_ai_message(topic="법률", tone="친근한"):
         조건:
         - 주제: {topic}
         - 톤: {tone}
-        - 길이: 1-2문장
+        - 길이: 2문장
         - 한국어로 작성
         - 법률사무소 특성에 맞게
         - 오늘 날짜: {datetime.now().strftime('%Y년 %m월 %d일 %A')}
+        - 큰따옴표 없이 작성
         
-        예시 스타일: "새로운 한 주가 시작되었습니다. 언제나 여러분의 든든한 법률 파트너가 되겠습니다."
+        예시 스타일: 새로운 한 주가 시작되었습니다. 언제나 여러분의 든든한 법률 파트너가 되겠습니다.
         """
         
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=150,
             temperature=0.7
         )
         
-        return response.choices[0].message.content.strip()
+        ai_message = response.choices[0].message.content.strip()
+        ai_message = ai_message.strip('"').strip("'")
+        ai_message = ai_message.replace('"', '').replace('"', '').replace('"', '')
+        
+        return ai_message
+        
     except Exception as e:
-        st.warning(f"AI 메시지 생성 실패: {e}")
         return pick_contextual_message()
 
-def get_unsplash_image(query="law office", width=600, height=200):
-    """Unsplash에서 랜덤 이미지 URL 가져오기"""
-    try:
-        # Unsplash API 없이도 사용할 수 있는 랜덤 이미지 URL
-        unsplash_url = f"https://source.unsplash.com/{width}x{height}/?{query}"
-        
-        # 이미지가 유효한지 확인
-        response = requests.head(unsplash_url, timeout=5)
-        if response.status_code == 200:
-            return unsplash_url
-        else:
-            # 기본 이미지 URL들
-            default_images = [
-                f"https://source.unsplash.com/{width}x{height}/?office",
-                f"https://source.unsplash.com/{width}x{height}/?business",
-                f"https://source.unsplash.com/{width}x{height}/?professional"
-            ]
-            return random.choice(default_images)
-    except:
-        # 완전히 실패하면 None 반환 (이미지 없이 진행)
-        return None
+def create_svg_gradient_image(width=600, height=200, text="법률 뉴스레터"):
+    """SVG 그라디언트 이미지 생성"""
+    svg_content = f'''<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+            </linearGradient>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grad1)" />
+        <text x="50%" y="50%" font-family="Arial, sans-serif" font-size="24" font-weight="bold" 
+              fill="white" text-anchor="middle" dominant-baseline="middle">{text}</text>
+    </svg>'''
+    return f"data:image/svg+xml;base64,{base64.b64encode(svg_content.encode()).decode()}"
 
-def _extract_google_link(link: str) -> str:
-    """Google News RSS가 중간 리다이렉트 링크를 줄 때 실제 기사 URL 추출"""
+def create_svg_gradient_image2(width=600, height=200, text="신뢰할 수 있는 법률 정보"):
+    """두 번째 SVG 그라디언트 이미지 생성"""
+    svg_content = f'''<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" style="stop-color:#4facfe;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#00f2fe;stop-opacity:1" />
+            </linearGradient>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grad2)" />
+        <text x="50%" y="50%" font-family="Arial, sans-serif" font-size="20" font-weight="600" 
+              fill="white" text-anchor="middle" dominant-baseline="middle">{text}</text>
+    </svg>'''
+    return f"data:image/svg+xml;base64,{base64.b64encode(svg_content.encode()).decode()}"
+
+def get_reliable_image(width=600, height=200):
+    """매우 안정적인 이미지 URL 반환 (자연 풍경 포함)"""
+    
+    # 옵션 1: 검증된 고정 이미지 URLs (비즈니스 + 자연 풍경 혼합)
+    reliable_images = [
+        # 비즈니스/법률 관련
+        "https://images.unsplash.com/photo-1589829545856-d10d557cf95f?w=600&h=200&fit=crop&auto=format",  # 법정
+        "https://images.unsplash.com/photo-1521791136064-7986c2920216?w=600&h=200&fit=crop&auto=format",  # 책들
+        "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=600&h=200&fit=crop&auto=format",  # 오피스
+        "https://images.unsplash.com/photo-1516442719524-a603408c90cb?w=600&h=200&fit=crop&auto=format",  # 비즈니스
+        "https://images.unsplash.com/photo-1560472354-b33ff0c44a43?w=600&h=200&fit=crop&auto=format",  # 서류
+        "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=600&h=200&fit=crop&auto=format",  # 저울(정의)
+        
+        # 자연 풍경 (새로 추가)
+        "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=600&h=200&fit=crop&auto=format",  # 산과 호수
+        "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=600&h=200&fit=crop&auto=format",  # 숲길
+        "https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=600&h=200&fit=crop&auto=format",  # 자연 풍경
+        "https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?w=600&h=200&fit=crop&auto=format",  # 들판
+        "https://images.unsplash.com/photo-1540979388789-6cee28a1cdc9?w=600&h=200&fit=crop&auto=format",  # 해변
+        "https://images.unsplash.com/photo-1418065460487-3e41a6c84dc5?w=600&h=200&fit=crop&auto=format",  # 산
+        "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=600&h=200&fit=crop&auto=format",  # 호수
+        "https://images.unsplash.com/photo-1439066615861-d1af74d74000?w=600&h=200&fit=crop&auto=format",  # 호수와 산
+        "https://images.unsplash.com/photo-1501594907352-04cda38ebc29?w=600&h=200&fit=crop&auto=format",  # 바다
+        "https://images.unsplash.com/photo-1426604966848-d7adac402bff?w=600&h=200&fit=crop&auto=format",  # 나무
+    ]
+    
+    # 옵션 2: SVG 이미지들 (항상 작동)
+    gradient_images = [
+        create_svg_gradient_image(width, height, "법률 뉴스레터"),
+        create_svg_gradient_image2(width, height, "신뢰할 수 있는 법률 정보"),
+    ]
+    
     try:
+        # 1단계: Unsplash 이미지 시도
+        selected_image = random.choice(reliable_images)
+        response = requests.head(selected_image, timeout=2)
+        if response.status_code == 200:
+            return selected_image
+    except:
+        pass
+    
+    try:
+        # 2단계: Picsum 대체 이미지 시도
+        picsum_id = random.randint(1, 100)  # 더 안정적인 범위
+        picsum_url = f"https://picsum.photos/{width}/{height}?random={picsum_id}"
+        response = requests.head(picsum_url, timeout=2)
+        if response.status_code == 200:
+            return picsum_url
+    except:
+        pass
+    
+    # 3단계: SVG 이미지 반환 (항상 작동)
+    return random.choice(gradient_images)
+
+def _extract_google_link_improved(link: str) -> str:
+    """개선된 Google News 링크 추출 (에러 처리 강화)"""
+    try:
+        # Google News 리다이렉트가 아닌 경우 그대로 반환
+        if "news.google.com" not in link:
+            return link
+            
         p = urlparse(link)
         if "news.google.com" in p.netloc:
             from urllib.parse import parse_qs
             qs = parse_qs(p.query)
             if "url" in qs and qs["url"]:
-                return qs["url"][0]
-    except:
-        pass
-    return link
+                decoded_url = qs["url"][0]
+                # URL 유효성 검사
+                try:
+                    parsed_decoded = urlparse(decoded_url)
+                    if parsed_decoded.scheme and parsed_decoded.netloc:
+                        return decoded_url
+                except:
+                    pass
+        
+        # 추출 실패시 원본 반환 (차단되더라도 일단 포함)
+        return link
+    except Exception as e:
+        print(f"링크 추출 오류: {e}")
+        return link
 
 def parse_rss_date(date_str):
     """RSS pubDate를 파싱해서 YYYY.MM.DD 형식으로 변환"""
@@ -219,23 +334,23 @@ def parse_rss_date(date_str):
         return datetime.now().strftime('%Y.%m.%d')
     
     try:
-        # RFC 2822 형식 파싱 시도 (예: "Tue, 19 Dec 2023 14:30:00 GMT")
         from email.utils import parsedate_to_datetime
         dt = parsedate_to_datetime(date_str)
         return dt.strftime('%Y.%m.%d')
     except:
         try:
-            # ISO 8601 형식 시도
             dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
             return dt.strftime('%Y.%m.%d')
         except:
-            # 파싱 실패시 현재 날짜 반환
             return datetime.now().strftime('%Y.%m.%d')
 
-def fetch_google_rss(url: str, timeout: float = 10.0):
-    """단일 Google News RSS URL에서 기사 리스트 반환"""
+def fetch_naver_rss(url: str, timeout: float = 10.0):
+    """네이버 뉴스 RSS 수집"""
     try:
-        r = requests.get(url, timeout=timeout)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        r = requests.get(url, headers=headers, timeout=timeout)
         r.raise_for_status()
         r.encoding = "utf-8"
         root = ET.fromstring(r.text)
@@ -243,13 +358,86 @@ def fetch_google_rss(url: str, timeout: float = 10.0):
         
         for it in root.findall(".//item"):
             title = (it.findtext("title") or "").strip()
-            link = _extract_google_link((it.findtext("link") or "").strip())
+            link = (it.findtext("link") or "").strip()
             pub_date = (it.findtext("pubDate") or "").strip()
             
             if not title or not link:
                 continue
                 
-            # 날짜 파싱 개선
+            # 제목에서 불필요한 태그 제거
+            title = re.sub(r'<[^>]+>', '', title)
+            title = re.sub(r'\[.*?\]', '', title).strip()
+            
+            formatted_date = parse_rss_date(pub_date)
+            
+            items.append({
+                "title": title,
+                "url": link,
+                "date": formatted_date,
+                "source": "Naver",
+                "raw_date": pub_date
+            })
+        return items
+    except Exception as e:
+        return {"error": f"네이버 RSS 수집 실패: {e}"}
+
+def fetch_daum_rss(url: str, timeout: float = 10.0):
+    """다음 뉴스 RSS 수집"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        r = requests.get(url, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        r.encoding = "utf-8"
+        root = ET.fromstring(r.text)
+        items = []
+        
+        for it in root.findall(".//item"):
+            title = (it.findtext("title") or "").strip()
+            link = (it.findtext("link") or "").strip()
+            pub_date = (it.findtext("pubDate") or "").strip()
+            
+            if not title or not link:
+                continue
+                
+            # 제목 정리
+            title = re.sub(r'<[^>]+>', '', title)
+            title = re.sub(r'\[.*?\]', '', title).strip()
+            
+            formatted_date = parse_rss_date(pub_date)
+            
+            items.append({
+                "title": title,
+                "url": link,
+                "date": formatted_date,
+                "source": "Daum",
+                "raw_date": pub_date
+            })
+        return items
+    except Exception as e:
+        return {"error": f"다음 RSS 수집 실패: {e}"}
+
+def fetch_google_rss(url: str, timeout: float = 10.0):
+    """Google News RSS 수집"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        r = requests.get(url, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        r.encoding = "utf-8"
+        root = ET.fromstring(r.text)
+        items = []
+        
+        for it in root.findall(".//item"):
+            title = (it.findtext("title") or "").strip()
+            link = _extract_google_link_improved((it.findtext("link") or "").strip())
+            pub_date = (it.findtext("pubDate") or "").strip()
+            
+            if not title or not link:
+                continue
+                
             formatted_date = parse_rss_date(pub_date)
             
             items.append({
@@ -257,9 +445,24 @@ def fetch_google_rss(url: str, timeout: float = 10.0):
                 "url": link,
                 "date": formatted_date,
                 "source": "Google",
-                "raw_date": pub_date  # 디버깅용
+                "raw_date": pub_date
             })
         return items
+    except Exception as e:
+        return {"error": f"Google RSS 수집 실패: {e}"}
+
+def fetch_mixed_rss(url: str, timeout: float = 10.0):
+    """RSS 소스에 따라 적절한 수집 함수 선택"""
+    try:
+        if "naver.com" in url:
+            return fetch_naver_rss(url, timeout)
+        elif "daum.net" in url:
+            return fetch_daum_rss(url, timeout)
+        elif "google.com" in url:
+            return fetch_google_rss(url, timeout)
+        else:
+            # 기타 RSS는 기본 방식 사용
+            return fetch_google_rss(url, timeout)
     except Exception as e:
         return {"error": f"RSS 수집 실패: {e}"}
 
@@ -268,68 +471,162 @@ def create_news_cache_key(sources):
     sources_str = '|'.join(sorted(sources))
     return hashlib.md5(sources_str.encode()).hexdigest()
 
-def collect_latest_news(limit: int = 5, fallback_on_fail: bool = True, force_refresh: bool = False):
-    """구글 뉴스 RSS 소스 목록에서 최신 뉴스 수집 (중복 방지 개선)"""
+def collect_latest_news(limit: int = 10, fallback_on_fail: bool = True, force_refresh: bool = False):
+    """개선된 뉴스 수집 함수 (한국 뉴스만 수집, 포괄적 필터링)"""
     sources = st.session_state.newsletter_data.get('auto_news_sources') or COMPANY_CONFIG['default_news_sources']
     
-    # 캐시 키 생성
+    # 캐시 확인
     cache_key = create_news_cache_key(sources)
     current_time = datetime.now()
     
-    # 캐시 확인 (30분간 유효)
     if not force_refresh and 'news_cache' in st.session_state:
         cache_data = st.session_state.news_cache
         if (cache_data.get('key') == cache_key and 
             cache_data.get('timestamp') and 
-            (current_time - cache_data['timestamp']).total_seconds() < 1800):  # 30분
-            st.info("🔄 최근에 수집한 뉴스를 사용합니다. (강제 새로고침하려면 '강제 새로고침' 버튼을 사용하세요)")
+            (current_time - cache_data['timestamp']).total_seconds() < 1800):
             return cache_data['news']
     
     all_items = []
     titles_seen = set()
     urls_seen = set()
     errors = []
+    successful_sources = 0
 
-    for src in sources:
-        res = fetch_google_rss(src)
-        if isinstance(res, dict) and "error" in res:
-            errors.append(res["error"])
-            continue
+    # 외국 뉴스 필터링 키워드 (한국이 아닌 모든 외국 관련)
+    exclude_keywords = [
+        # 아시아 국가들
+        '베트남', 'vietnam', '하노이', '호치민', 
+        '중국', 'china', '베이징', '상하이', '시진핑',
+        '일본', 'japan', '도쿄', '오사카', '기시다',
+        '태국', 'thailand', '방콕',
+        '필리핀', 'philippines', '마닐라',
+        '말레이시아', 'malaysia', '쿠알라룸푸르',
+        '싱가포르', 'singapore',
+        '인도네시아', 'indonesia', '자카르타',
+        '라오스', 'laos', '비엔티안',
+        '캄보디아', 'cambodia', '프놈펜',
+        '미얀마', 'myanmar', '양곤',
+        '인도', 'india', '뉴델리', '뭄바이',
+        
+        # 미주 국가들
+        '미국', 'usa', 'america', '워싱턴', '뉴욕', '트럼프', '바이든',
+        '캐나다', 'canada', '오타와', '토론토',
+        '멕시코', 'mexico', '멕시코시티',
+        '브라질', 'brazil', '브라질리아', '상파울루',
+        '아르헨티나', 'argentina', '부에노스아이레스',
+        
+        # 유럽 국가들
+        '영국', 'uk', 'britain', '런던',
+        '프랑스', 'france', '파리',
+        '독일', 'germany', '베를린',
+        '이탈리아', 'italy', '로마',
+        '스페인', 'spain', '마드리드',
+        '러시아', 'russia', '모스크바', '푸틴',
+        '우크라이나', 'ukraine', '키예프', '젤렌스키',
+        
+        # 중동/아프리카
+        '이스라엘', 'israel', '텔아비브',
+        '사우디', 'saudi', '리야드',
+        '이란', 'iran', '테헤란',
+        '이집트', 'egypt', '카이로',
+        
+        # 국제기구 관련 (해외 소식)
+        'nato', 'eu ', 'un ', 'g7', 'g20', 'imf', 'who',
+        
+        # 기타 외국 지명
+        '해외', '국외', '외국인', '외국계'
+    ]
+
+    for i, src in enumerate(sources):
+        try:
+            res = fetch_mixed_rss(src, timeout=8.0)
             
-        for item in res:
-            # 제목과 URL 모두로 중복 확인
-            title_clean = re.sub(r'\s+', ' ', item["title"].strip().lower())
-            url_clean = item["url"].strip()
-            
-            if title_clean in titles_seen or url_clean in urls_seen:
+            if isinstance(res, dict) and "error" in res:
+                errors.append(f"소스 {i+1}: {res['error']}")
                 continue
                 
-            titles_seen.add(title_clean)
-            urls_seen.add(url_clean)
-            all_items.append(item)
+            successful_sources += 1
+            valid_items = 0
             
-            if len(all_items) >= limit * 2:  # 여유있게 수집
-                break
+            for item in res:
+                # 제목과 URL 정리 및 검증
+                title_clean = re.sub(r'\s+', ' ', item["title"].strip())
+                url_clean = item["url"].strip()
                 
+                # 한국 뉴스 필터링 (외국 뉴스 제외 + 한국 관련성 확인)
+                title_lower = title_clean.lower()
+                
+                # 1차: 외국 키워드가 포함된 뉴스는 제외
+                if any(keyword in title_lower for keyword in exclude_keywords):
+                    continue
+                
+                # 2차: 한국 관련성 확인 (한국 관련 키워드가 있거나, 한국 언론사 소스인 경우 통과)
+                korean_keywords = [
+                    '한국', '서울', '부산', '대구', '인천', '광주', '대전', '울산', '세종',
+                    '경기', '강원', '충북', '충남', '전북', '전남', '경북', '경남', '제주',
+                    '청와대', '국회', '정부', '국정원', '국세청', '검찰', '경찰',
+                    '삼성', 'lg', 'sk', '현대', '롯데', '포스코', '네이버', '카카오',
+                    '원화', '코스피', '코스닥', '한은', '금융위', '국토부', '복지부'
+                ]
+                
+                is_korean_news = (
+                    any(keyword in title_lower for keyword in korean_keywords) or
+                    'naver.com' in url_clean or 'daum.net' in url_clean or
+                    ('google.com' in url_clean and ('hl=ko' in url_clean or 'gl=KR' in url_clean))
+                )
+                
+                # 한국 관련성이 없는 뉴스는 제외 (단, 법률/정책 일반 키워드는 예외)
+                if not is_korean_news:
+                    general_policy_keywords = ['법률', '정책', '규제', '법안', '개정', '시행']
+                    if not any(keyword in title_lower for keyword in general_policy_keywords):
+                        continue
+                
+                # 중복 검사
+                if title_lower in titles_seen or url_clean in urls_seen:
+                    continue
+                
+                # 최소 품질 검사
+                if len(title_clean) < 5 or not url_clean.startswith('http'):
+                    continue
+                
+                # 차단된 Google News 링크 필터링
+                if "news.google.com" in url_clean and "/articles/" not in url_clean:
+                    continue
+                    
+                titles_seen.add(title_lower)
+                urls_seen.add(url_clean)
+                all_items.append({
+                    **item,
+                    "title": title_clean
+                })
+                valid_items += 1
+                
+                if len(all_items) >= limit * 3:
+                    break
+                    
+        except Exception as e:
+            errors.append(f"소스 {i+1} 처리 중 오류: {str(e)}")
+            continue
+            
         if len(all_items) >= limit * 2:
             break
 
-    # 날짜순 정렬 (최신순)
+    # 날짜순 정렬
     try:
         all_items.sort(key=lambda x: datetime.strptime(x['date'], '%Y.%m.%d'), reverse=True)
     except:
-        pass  # 정렬 실패시 원래 순서 유지
+        pass
 
-    # 결과가 너무 적으면 샘플로 보충
+    # 결과가 부족하면 샘플로 보충
     if len(all_items) < limit and fallback_on_fail:
-        sample = get_sample_news()
-        for it in sample:
-            title_clean = re.sub(r'\s+', ' ', it["title"].strip().lower())
-            if title_clean not in titles_seen:
-                all_items.append(it)
-                titles_seen.add(title_clean)
-                if len(all_items) >= limit:
-                    break
+        if successful_sources == 0:
+            return get_sample_news()[:limit]
+        elif len(all_items) < limit:
+            sample = get_sample_news()
+            need = limit - len(all_items)
+            for item in sample[:need]:
+                if item["title"].lower() not in titles_seen:
+                    all_items.append(item)
 
     final_news = all_items[:limit]
     
@@ -340,42 +637,69 @@ def collect_latest_news(limit: int = 5, fallback_on_fail: bool = True, force_ref
         'news': final_news
     }
 
-    if errors:
-        st.info("일부 RSS에서 오류가 있었습니다:\n- " + "\n- ".join(errors))
-
     return final_news
 
 def get_sample_news():
-    """샘플 법률 뉴스 데이터 생성"""
+    """다양한 시사/사회/경제/법률 샘플 뉴스 데이터 생성"""
     sample_news = [
         {
-            'title': '개인정보보호법 개정안 국회 통과',
-            'url': 'https://news.example.com/law1',
+            'title': '정부, 부동산 규제 완화 정책 발표',
+            'url': 'https://news.example.com/policy1',
             'date': datetime.now().strftime('%Y.%m.%d'),
             'source': '자동수집'
         },
         {
-            'title': '새로운 상속세 면제 한도 확대',
-            'url': 'https://news.example.com/law2', 
+            'title': '개인정보보호법 개정안 국회 통과',
+            'url': 'https://news.example.com/law1', 
             'date': (datetime.now() - timedelta(days=1)).strftime('%Y.%m.%d'),
             'source': '자동수집'
         },
         {
-            'title': '부동산 계약 관련 법률 개정 사항',
-            'url': 'https://news.example.com/law3',
+            'title': '최저임금 인상률 결정 앞두고 논란',
+            'url': 'https://news.example.com/economy1',
             'date': (datetime.now() - timedelta(days=2)).strftime('%Y.%m.%d'),
             'source': '자동수집'
         },
         {
             'title': '근로기준법 개정으로 인한 기업 대응 방안',
-            'url': 'https://news.example.com/law4',
+            'url': 'https://news.example.com/law2',
             'date': (datetime.now() - timedelta(days=3)).strftime('%Y.%m.%d'),
             'source': '자동수집'
         },
         {
-            'title': '디지털세법 시행령 발표',
-            'url': 'https://news.example.com/law5',
+            'title': '금융위, 가상자산 규제 강화 방침',
+            'url': 'https://news.example.com/finance1',
             'date': (datetime.now() - timedelta(days=4)).strftime('%Y.%m.%d'),
+            'source': '자동수집'
+        },
+        {
+            'title': '국세청, 세무조사 디지털화 추진',
+            'url': 'https://news.example.com/tax1',
+            'date': (datetime.now() - timedelta(days=5)).strftime('%Y.%m.%d'),
+            'source': '자동수집'
+        },
+        {
+            'title': '중소기업 지원 정책 확대 발표',
+            'url': 'https://news.example.com/policy2',
+            'date': (datetime.now() - timedelta(days=6)).strftime('%Y.%m.%d'),
+            'source': '자동수집'
+        },
+        {
+            'title': '환경부, 탄소중립 실현 로드맵 공개',
+            'url': 'https://news.example.com/environment1',
+            'date': (datetime.now() - timedelta(days=7)).strftime('%Y.%m.%d'),
+            'source': '자동수집'
+        },
+        {
+            'title': '디지털세법 시행령 발표',
+            'url': 'https://news.example.com/law3',
+            'date': (datetime.now() - timedelta(days=8)).strftime('%Y.%m.%d'),
+            'source': '자동수집'
+        },
+        {
+            'title': '코스피 상장기업 ESG 공시 의무화',
+            'url': 'https://news.example.com/finance2',
+            'date': (datetime.now() - timedelta(days=9)).strftime('%Y.%m.%d'),
             'source': '자동수집'
         }
     ]
@@ -404,30 +728,113 @@ def load_address_book():
         pass
     return False
 
+def init_default_address_book():
+    """기본 주소록 설정"""
+    if st.session_state.newsletter_data['address_book'].empty:
+        default_df = pd.DataFrame(DEFAULT_ADDRESS_BOOK)
+        st.session_state.newsletter_data['address_book'] = default_df
+        save_address_book()
+
 def create_html_newsletter(news_items, custom_message=""):
-    """HTML 뉴스레터 생성 (이미지 및 사무실 정보 포함)"""
+    """이메일 클라이언트 호환성을 최대화한 HTML 뉴스레터 생성"""
     
-    # 랜덤 이미지 가져오기
-    hero_image_url = get_unsplash_image("law office business", 600, 200)
+    # 이미지 가져오기 (항상 성공)
+    hero_image_url = None
+    if COMPANY_CONFIG.get('use_newsletter_images', True):
+        hero_image_url = get_reliable_image(600, 200)
     
-    # 이미지 HTML (이미지가 없으면 그라디언트 배경 사용)
+    # 이미지 HTML 생성 (이메일 클라이언트 호환성 최대화)
     if hero_image_url:
-        hero_html = f'''
-        <div class="hero-image" style="background-image: url('{hero_image_url}'); background-size: cover; background-position: center;">
-            <div style="background: rgba(102, 126, 234, 0.8); padding: 20px; color: white; text-align: center;">
-                <h2 style="margin: 0; font-size: 24px;">📧 법률 뉴스레터</h2>
+        if hero_image_url.startswith('data:'):
+            # SVG Data URL인 경우
+            hero_html = f'''
+            <div style="background: url('{hero_image_url}'); background-size: cover; background-position: center; height: 200px; display: block;">
+                <table cellpadding="0" cellspacing="0" width="100%" height="200" style="background: url('{hero_image_url}'); background-size: cover; background-position: center;">
+                    <tr>
+                        <td align="center" valign="middle" style="color: white; text-align: center;">
+                        </td>
+                    </tr>
+                </table>
             </div>
-        </div>
-        '''
+            '''
+        else:
+            # 외부 이미지 URL인 경우
+            hero_html = f'''
+            <div style="position: relative; height: 200px; background-image: linear-gradient(rgba(102, 126, 234, 0.7), rgba(118, 75, 162, 0.7)), url('{hero_image_url}'); background-size: cover; background-position: center;">
+                <table cellpadding="0" cellspacing="0" width="100%" height="200">
+                    <tr>
+                        <td align="center" valign="middle" style="color: white; text-align: center;">
+                            <h2 style="margin: 0; font-size: 28px; font-weight: bold; color: white; text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">
+                                법률 뉴스레터
+                            </h2>
+                            <p style="margin: 10px 0 0 0; font-size: 16px; color: white; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">
+                                신뢰할 수 있는 법률 정보
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+            '''
     else:
+        # 이미지 없는 경우의 기본 헤더
         hero_html = '''
-        <div class="hero-image" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); height: 200px; display: flex; align-items: center; justify-content: center; color: white; font-size: 24px; font-weight: bold;">
-            📧 법률 뉴스레터
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); height: 200px;">
+            <table cellpadding="0" cellspacing="0" width="100%" height="200">
+                <tr>
+                    <td align="center" valign="middle" style="color: white; text-align: center;">
+                        <h2 style="margin: 0; font-size: 28px; font-weight: bold; color: white;">
+                            법률 뉴스레터
+                        </h2>
+                        <p style="margin: 10px 0 0 0; font-size: 16px; color: white;">
+                            신뢰할 수 있는 법률 정보
+                        </p>
+                    </td>
+                </tr>
+            </table>
         </div>
         '''
     
     # 사무실 정보
     office_info = COMPANY_CONFIG['office_info']
+    today = datetime.now().strftime('%Y년 %m월 %d일')
+    
+    # 인사말과 커스텀 메시지를 자연스럽게 결합
+    if custom_message:
+        combined_greeting = f"""
+        {COMPANY_CONFIG['default_greeting']}<br>
+        {custom_message} 
+        """
+    else:
+        combined_greeting = f"""
+        {COMPANY_CONFIG['default_greeting']}<br>
+        """
+    
+    # 뉴스 아이템 HTML 생성
+    news_html = ""
+    for i, item in enumerate(news_items, 1):
+        news_html += f"""
+        <tr>
+            <td style="padding: 25px 0; border-bottom: 1px solid #eeeeee;">
+                <table cellpadding="0" cellspacing="0" width="100%">
+                    <tr>
+                        <td style="width: 40px; vertical-align: top; padding-right: 15px;">
+                            <div style="width: 30px; height: 30px; background-color: #333333; color: white; border-radius: 50%; text-align: center; line-height: 30px; font-weight: bold; font-size: 14px;">
+                                {i}
+                            </div>
+                        </td>
+                        <td style="vertical-align: top;">
+                            <a href="{item['url']}" style="color: #000000; text-decoration: none; font-size: 18px; font-weight: 600; line-height: 1.4; display: block; margin-bottom: 8px;">
+                                {item['title']}
+                            </a>
+                            <div style="font-size: 13px; color: #888888; margin-top: 8px;">
+                                 {item['date']}
+                            </div>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+        """
     
     html_template = f"""
     <!DOCTYPE html>
@@ -435,184 +842,110 @@ def create_html_newsletter(news_items, custom_message=""):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
         <title>{COMPANY_CONFIG['company_name']} 뉴스레터</title>
-        <style>
-            body {{
-                font-family: 'Malgun Gothic', sans-serif;
-                margin: 0;
-                padding: 20px;
-                background-color: #f5f5f5;
-                line-height: 1.6;
-            }}
-            .container {{
-                max-width: 600px;
-                margin: 0 auto;
-                background-color: white;
-                border-radius: 10px;
-                box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-                overflow: hidden;
-            }}
-            .header {{
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                text-align: center;
-                padding: 30px 20px;
-            }}
-            .header h1 {{
-                margin: 0;
-                font-size: 24px;
-                font-weight: bold;
-            }}
-            .header p {{
-                margin: 10px 0 0 0;
-                font-size: 16px;
-                opacity: 0.9;
-            }}
-            .hero-image {{
-                width: 100%;
-                height: 200px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                color: white;
-                font-size: 18px;
-                font-weight: bold;
-            }}
-            .content {{
-                padding: 30px;
-            }}
-            .greeting {{
-                font-size: 16px;
-                line-height: 1.6;
-                color: #333;
-                margin-bottom: 20px;
-            }}
-            .custom-message {{
-                background-color: #f8f9fa;
-                border-left: 4px solid #667eea;
-                padding: 15px;
-                margin: 20px 0;
-                font-style: italic;
-                border-radius: 0 5px 5px 0;
-            }}
-            .news-section {{
-                margin-top: 30px;
-            }}
-            .news-item {{
-                border-bottom: 1px solid #eee;
-                padding: 15px 0;
-                transition: background-color 0.3s;
-            }}
-            .news-item:hover {{
-                background-color: #f8f9fa;
-            }}
-            .news-item:last-child {{
-                border-bottom: none;
-            }}
-            .news-title {{
-                color: #667eea;
-                text-decoration: none;
-                font-weight: bold;
-                font-size: 16px;
-                display: block;
-                margin-bottom: 5px;
-                line-height: 1.4;
-            }}
-            .news-title:hover {{
-                color: #764ba2;
-                text-decoration: underline;
-            }}
-            .news-date {{
-                color: #888;
-                font-size: 12px;
-            }}
-            .footer {{
-                background-color: #f8f9fa;
-                padding: 25px;
-                text-align: center;
-                color: #666;
-                font-size: 13px;
-                border-top: 1px solid #eee;
-            }}
-            .office-info {{
-                background-color: #667eea;
-                color: white;
-                padding: 20px;
-                text-align: center;
-                font-size: 14px;
-            }}
-            .office-info h3 {{
-                margin: 0 0 10px 0;
-                font-size: 16px;
-            }}
-            .office-info p {{
-                margin: 5px 0;
-            }}
-            .unsubscribe {{
-                margin-top: 20px;
-                padding-top: 15px;
-                border-top: 1px solid #ddd;
-                font-size: 11px;
-                color: #999;
-            }}
-        </style>
+        <!--[if mso]>
+        <noscript>
+            <xml>
+                <o:OfficeDocumentSettings>
+                    <o:PixelsPerInch>96</o:PixelsPerInch>
+                </o:OfficeDocumentSettings>
+            </xml>
+        </noscript>
+        <![endif]-->
     </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>신뢰할 수 있는</h1>
-                <p>{COMPANY_CONFIG['company_name']}</p>
-            </div>
-            
-            {hero_html}
-            
-            <div class="content">
-                <div class="greeting">
-                    {COMPANY_CONFIG['default_greeting']}<br>
-                    항상 여러분과 함께하는 믿음직한 법률 파트너가 되겠습니다.
-                </div>
-                
-                {f'<div class="custom-message">{custom_message}</div>' if custom_message else ''}
-                
-                <div class="news-section">
-                    <h3 style="color: #333; border-bottom: 2px solid #667eea; padding-bottom: 10px; margin-bottom: 20px;">최신 법률 소식</h3>
-                    {generate_news_items_html(news_items)}
-                </div>
-            </div>
-            
-            <div class="office-info">
-                <h3>📍 {COMPANY_CONFIG['company_name']}</h3>
-                <p>📧 {COMPANY_CONFIG['company_email']}</p>
-                <p>📞 {office_info['phone']}</p>
-                <p>🏢 {office_info['address']}</p>
-                <p>🕒 {office_info['business_hours']}</p>
-                {f"<p>🌐 {office_info['website']}</p>" if office_info.get('website') else ''}
-            </div>
-            
-            <div class="footer">
-                <p><strong>{COMPANY_CONFIG['footer_message']}</strong></p>
-                <p>본 메일은 법률정보 제공을 위해 발송되었습니다.</p>
-                
-                <p style="margin-top: 15px;">© 2025 {COMPANY_CONFIG['company_name']}. All rights reserved.</p>
-            </div>
-        </div>
+    <body style="margin: 0; padding: 0; background-color: #ffffff; font-family: Arial, sans-serif, '맑은 고딕', 'Malgun Gothic', '돋움', Dotum; color: #333333; line-height: 1.6;">
+        <table cellpadding="0" cellspacing="0" width="100%" style="background-color: #ffffff;">
+            <tr>
+                <td align="center" style="padding: 40px 20px;">
+                    <!-- 메인 컨테이너 -->
+                    <table cellpadding="0" cellspacing="0" width="680" style="max-width: 680px; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+                        <!-- 헤더 이미지 -->
+                        <tr>
+                            <td style="padding: 0;">
+                                {hero_html}
+                            </td>
+                        </tr>
+                        
+                        <!-- 메인 컨텐츠 -->
+                        <tr>
+                            <td style="padding: 40px 30px;">
+                                <!-- 헤더 -->
+                                <table cellpadding="0" cellspacing="0" width="100%">
+                                    <tr>
+                                        <td align="center" style="padding-bottom: 40px; border-bottom: 1px solid #e0e0e0;">
+                                            <h1 style="margin: 0 0 8px 0; font-size: 42px; font-weight: 700; color: #000000; letter-spacing: -1px;">Newsletter</h1>
+                                            <p style="margin: 0; font-size: 16px; color: #666666; font-weight: 400;">법률 정보 · {today}</p>
+                                        </td>
+                                    </tr>
+                                </table>
+                                
+                                <!-- 인사말 -->
+                                <table cellpadding="0" cellspacing="0" width="100%">
+                                    <tr>
+                                        <td style="padding: 30px 0 40px 0;">
+                                            <p style="margin: 0; font-size: 16px; line-height: 1.8; color: #333333;">
+                                                {combined_greeting}
+                                            </p>
+                                        </td>
+                                    </tr>
+                                </table>
+                                
+                                <!-- 뉴스 섹션 -->
+                                <table cellpadding="0" cellspacing="0" width="100%">
+                                    {news_html}
+                                </table>
+                            </td>
+                        </tr>
+                        
+                        <!-- 푸터 -->
+                        <tr>
+                            <td style="background-color: #f8f9fa; padding: 30px; text-align: center;">
+                                <!-- 사무실 정보 -->
+                                <table cellpadding="0" cellspacing="0" width="100%" style="background-color: #ffffff; border-radius: 5px; border: 1px solid #e0e0e0; margin: 20px 0;">
+                                    <tr>
+                                        <td style="padding: 20px; text-align: left;">
+                                            <h3 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #333333;">{COMPANY_CONFIG['company_name']}</h3>
+                                            <p style="margin: 6px 0; font-size: 14px; color: #666666;">이메일: {COMPANY_CONFIG['company_email']}</p>
+                                            <p style="margin: 6px 0; font-size: 14px; color: #666666;">전화: {office_info['phone']}</p>
+                                            <p style="margin: 6px 0; font-size: 14px; color: #666666;">주소: {office_info['address']}</p>
+                                            <p style="margin: 6px 0; font-size: 14px; color: #666666;">운영시간: {office_info['business_hours']}</p>
+                                            {f"<p style='margin: 6px 0; font-size: 14px; color: #666666;'>웹사이트: {office_info['website']}</p>" if office_info.get('website') else ''}
+                                        </td>
+                                    </tr>
+                                </table>
+                                
+                                <p style="margin: 15px 0; font-size: 13px; color: #888888; line-height: 1.6;">
+                                    <strong>{COMPANY_CONFIG['footer_message']}</strong>
+                                </p>
+                                <p style="margin: 15px 0; font-size: 13px; color: #888888; line-height: 1.6;">
+                                    본 뉴스레터는 법률 정보 제공을 목적으로 발송됩니다.
+                                </p>
+                                
+                                <!-- 수신거부 -->
+                                <table cellpadding="0" cellspacing="0" width="100%" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e0e0e0;">
+                                    <tr>
+                                        <td style="text-align: center;">
+                                            <p style="margin: 0; font-size: 13px; color: #888888;">
+                                                뉴스레터 수신을 중단하시려면 
+                                                <a href="mailto:{COMPANY_CONFIG['company_email']}?subject=수신거부신청" style="color: #333333; text-decoration: underline;">여기를 클릭</a>하여 신청해주세요.
+                                            </p>
+                                            <p style="margin: 15px 0 0 0; font-size: 11px; color: #aaa;">
+                                                © 2025 {COMPANY_CONFIG['company_name']}. All rights reserved.
+                                            </p>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
     </body>
     </html>
     """
     return html_template
-
-def generate_news_items_html(news_items):
-    """뉴스 아이템 HTML 생성"""
-    html = ""
-    for i, item in enumerate(news_items, 1):
-        html += f"""
-        <div class="news-item">
-            <a href="{item['url']}" class="news-title">{i}. {item['title']}</a>
-            <div class="news-date">📅 {item['date']} | 📰 {item.get('source', '자동수집')}</div>
-        </div>
-        """
-    return html
 
 def validate_email(email):
     """이메일 주소 유효성 검사"""
@@ -705,12 +1038,12 @@ def send_newsletter(recipients, subject, html_content, smtp_settings):
 
 # 페이지 설정
 st.set_page_config(
-    page_title=f"{COMPANY_CONFIG['company_name']} 뉴스레터 발송 시스템",
+    page_title=f"{COMPANY_CONFIG['company_name']} 뉴스레터 시스템",
     page_icon="📧",
     layout="wide"
 )
 
-# CSS 스타일링
+# 간소화된 CSS 스타일링
 st.markdown("""
 <style>
 .main-header {
@@ -721,40 +1054,34 @@ st.markdown("""
     border-radius: 10px;
     margin-bottom: 2rem;
 }
-.auto-news-box {
-    background-color: #e8f5e8;
-    border: 1px solid #4caf50;
-    border-radius: 5px;
-    padding: 15px;
-    margin: 10px 0;
+.big-button {
+    font-size: 1.2rem !important;
+    padding: 1rem 2rem !important;
+    margin: 0.5rem !important;
+    border-radius: 10px !important;
+    width: 100% !important;
 }
-.news-source-item {
-    background-color: #f8f9fa;
-    border: 1px solid #dee2e6;
-    border-radius: 5px;
-    padding: 10px;
-    margin: 5px 0;
+.status-box {
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 1rem 0;
+    text-align: center;
+    font-weight: bold;
 }
-.success-box {
+.success-status {
     background-color: #d4edda;
+    color: #155724;
     border: 1px solid #c3e6cb;
-    border-radius: 5px;
-    padding: 15px;
-    margin: 10px 0;
 }
-.warning-box {
+.warning-status {
     background-color: #fff3cd;
+    color: #856404;
     border: 1px solid #ffeaa7;
-    border-radius: 5px;
-    padding: 15px;
-    margin: 10px 0;
 }
-.ai-message-box {
-    background-color: #e3f2fd;
-    border: 1px solid #2196f3;
-    border-radius: 5px;
-    padding: 15px;
-    margin: 10px 0;
+.info-status {
+    background-color: #d1ecf1;
+    color: #0c5460;
+    border: 1px solid #bee5eb;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -765,399 +1092,278 @@ if 'newsletter_data' not in st.session_state:
         'news_items': [],
         'email_settings': {},
         'address_book': pd.DataFrame(),
-        'auto_news_sources': COMPANY_CONFIG['default_news_sources'].copy()
+        'auto_news_sources': COMPANY_CONFIG['default_news_sources'].copy(),
+        'selected_news': [],
+        'custom_message': ''
     }
-    # 저장된 주소록 자동 로드
-    load_address_book()
+    # 저장된 주소록 자동 로드 or 기본 주소록 설정
+    if not load_address_book():
+        init_default_address_book()
 
 # 메인 앱
 def main():
     # 자동 SMTP 설정 로드
     auto_configure_smtp()
     
-    st.markdown(f'<div class="main-header"><h1>📧 {COMPANY_CONFIG["company_name"]} 뉴스레터 발송 시스템</h1></div>', 
+    st.markdown(f'<div class="main-header"><h1>📧 {COMPANY_CONFIG["company_name"]}<br>뉴스레터 시스템</h1></div>', 
                 unsafe_allow_html=True)
     
-    # 메뉴 구성
-    menu_options = ["🏠 홈", "📰 뉴스 수집", "📝 뉴스레터 작성", "👥 주소록 관리", "📤 발송하기"]
+    # 현재 상태 확인
+    has_news = len(st.session_state.newsletter_data['news_items']) > 0
+    has_addresses = len(st.session_state.newsletter_data['address_book']) > 0
+    has_selected_news = len(st.session_state.newsletter_data.get('selected_news', [])) > 0
     
-    if not COMPANY_CONFIG['skip_email_setup']:
-        menu_options.insert(-1, "📧 이메일 설정")
+    # 상태 표시 (더 직관적으로)
+    st.subheader("📊 현재 상태")
+    col1, col2, col3 = st.columns(3)
     
-    menu = st.sidebar.selectbox("메뉴 선택", menu_options)
+    with col1:
+        if has_news:
+            st.markdown(f'<div class="status-box success-status">📰 뉴스 수집됨<br>({len(st.session_state.newsletter_data["news_items"])}개)</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="status-box warning-status">📰 뉴스 없음</div>', unsafe_allow_html=True)
     
+    with col2:
+        if has_addresses:
+            st.markdown(f'<div class="status-box success-status">👥 주소록 준비됨<br>({len(st.session_state.newsletter_data["address_book"])}명)</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="status-box warning-status">👥 주소록 없음</div>', unsafe_allow_html=True)
     
-    if menu == "🏠 홈":
-        st.header("환영합니다! 👋")
-        
-        # 자동 설정 상태 표시
-        st.markdown('<div class="auto-news-box">✅ 이메일 설정이 자동으로 구성되었습니다!</div>', 
-                   unsafe_allow_html=True)
-        
-        st.write(f"""
-        **{COMPANY_CONFIG['company_name']} 뉴스레터 발송 시스템**
-        
-        이 시스템을 사용하여 손쉽게 뉴스레터를 작성하고 발송할 수 있습니다.
-        
-        **사용 방법:**
-        1. **뉴스 수집**: 최신 법률 뉴스를 자동으로 수집하세요
-        2. **주소록 관리**: 수신자 명단을 관리하세요  
-        3. **뉴스레터 작성**: 수집된 뉴스로 뉴스레터를 작성하세요
-        4. **발송하기**: 작성된 뉴스레터를 발송하세요
-        
-        **새로운 기능:**
-        - 🎨 랜덤 이미지 자동 추가
-        - 🤖 AI 맞춤형 메시지 생성
-        - 💾 주소록 자동 저장/불러오기
-        - 📅 정확한 뉴스 날짜 표시
-        - 🏢 사무실 정보 및 수신거부 안내
-        """)
-        
-        # 통계 정보
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("📰 뉴스 항목", len(st.session_state.newsletter_data['news_items']))
-        with col2:
-            st.metric("👥 주소록", len(st.session_state.newsletter_data['address_book']))
-        with col3:
-            smtp_configured = bool(st.session_state.newsletter_data['email_settings'])
-            st.metric("📧 이메일", "✅" if smtp_configured else "❌")
-        with col4:
-            ai_status = "✅" if COMPANY_CONFIG.get('use_openai') else "📝"
-            st.metric("🤖 AI 메시지", ai_status)
+    with col3:
+        if has_selected_news:
+            st.markdown(f'<div class="status-box success-status">📝 뉴스레터 작성됨<br>({len(st.session_state.newsletter_data["selected_news"])}개 뉴스)</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="status-box info-status">📝 뉴스레터 미작성</div>', unsafe_allow_html=True)
     
-    elif menu == "📰 뉴스 수집":
-        st.header("뉴스 자동 수집")
-        
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            st.subheader("📡 뉴스 소스 관리")
-            
-            # 뉴스 소스 표시
-            for i, source in enumerate(st.session_state.newsletter_data['auto_news_sources']):
-                col_a, col_b = st.columns([4, 1])
-                with col_a:
-                    st.text(f"{i+1}. {source}")
-                with col_b:
-                    if st.button("🗑️", key=f"source_delete_{i}"):
-                        st.session_state.newsletter_data['auto_news_sources'].pop(i)
-                        st.rerun()
-            
-            # 새 소스 추가
-            new_source = st.text_input("새로운 뉴스 소스 URL 추가")
-            if st.button("➕ 소스 추가") and new_source:
-                st.session_state.newsletter_data['auto_news_sources'].append(new_source)
-                st.rerun()
-        
-        with col2:
-            st.subheader("구글 뉴스 수집")
-            
-            if st.button("최신 뉴스 수집", type="primary"):
-                with st.spinner("구글에서 뉴스를 수집하는 중..."):
-                    collected_news = collect_latest_news(force_refresh=False)
-                    
-                    if collected_news:
-                        st.session_state.newsletter_data['news_items'] = collected_news
-                        st.success(f"구글에서 {len(collected_news)}개의 뉴스를 수집했습니다!")
-                        st.rerun()
-                    else:
-                        st.warning("수집된 뉴스가 없습니다. 네트워크 연결을 확인하세요.")
-            
-            if st.button("🔄 강제 새로고침"):
-                with st.spinner("새로운 뉴스를 강제로 수집하는 중..."):
-                    collected_news = collect_latest_news(force_refresh=True)
-                    if collected_news:
-                        st.session_state.newsletter_data['news_items'] = collected_news
-                        st.success(f"새로 {len(collected_news)}개의 뉴스를 수집했습니다!")
-                        st.rerun()
-            
-            st.write("---")
-            
-            if st.button("뉴스 목록 초기화"):
-                st.session_state.newsletter_data['news_items'] = []
-                if 'news_cache' in st.session_state:
-                    del st.session_state.news_cache
-                st.success("뉴스 목록이 초기화되었습니다.")
-                st.rerun()
-            
-            # 구글 뉴스 검색 키워드 추가
-            st.subheader("검색 키워드")
-            new_keyword = st.text_input("새로운 검색 키워드")
-            if st.button("키워드 추가") and new_keyword:
-                encoded_keyword = quote(new_keyword)
-                new_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
-                st.session_state.newsletter_data['auto_news_sources'].append(new_url)
-                st.success(f"'{new_keyword}' 키워드가 추가되었습니다.")
-                st.rerun()
-        
-        # 수집된 뉴스 미리보기
-        if st.session_state.newsletter_data['news_items']:
-            st.subheader("📋 수집된 뉴스 목록")
-            for i, item in enumerate(st.session_state.newsletter_data['news_items']):
-                with st.expander(f"{i+1}. {item['title']} ({item['date']})"):
-                    st.write(f"🔗 **URL**: {item['url']}")
-                    st.write(f"📅 **날짜**: {item['date']}")
-                    st.write(f"📰 **소스**: {item.get('source', '수동입력')}")
-                    if 'raw_date' in item:
-                        st.write(f"🔍 **원본 날짜**: {item['raw_date']}")
+    st.write("---")
     
-    elif menu == "📝 뉴스레터 작성":
-        st.header("뉴스레터 작성")
-        
-        # 뉴스가 없는 경우 안내
-        if not st.session_state.newsletter_data['news_items']:
-            st.warning("먼저 '뉴스 수집' 메뉴에서 뉴스를 수집하세요.")
-            if st.button("📄 뉴스 수집하러 가기"):
-                st.session_state.selected_menu = "📰 뉴스 수집"
-                st.rerun()
-            return
-        
-        # 메시지 생성 옵션
-        st.subheader("✨ 맞춤형 메시지 생성")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("🎯 시즌·요일 메시지"):
-                st.session_state.current_message = pick_contextual_message()
-                st.rerun()
-        
-        with col2:
-            if st.button("🔄 랜덤 다시 뽑기"):
-                st.session_state.current_message = pick_contextual_message()
-                st.rerun()
-        
-        with col3:
-            if COMPANY_CONFIG.get('use_openai') and st.button("🤖 AI 맞춤 메시지"):
-                with st.spinner("AI가 메시지를 생성하는 중..."):
-                    ai_message = generate_ai_message()
-                    st.session_state.current_message = ai_message
-                    st.markdown(f'<div class="ai-message-box">🤖 AI가 생성한 메시지: {ai_message}</div>', 
-                               unsafe_allow_html=True)
-                    st.rerun()
-        
-        # 기본 메시지 설정
-        if "current_message" not in st.session_state:
-            st.session_state.current_message = pick_contextual_message()
-        
-        custom_message = st.text_area(
-            label="사용자 정의 메시지",
-            value=st.session_state.current_message,
-            height=100,
-            help="버튼으로 추천 문구를 바꾼 뒤, 필요하면 직접 수정해서 사용하세요."
-        )
-        
-        # 뉴스 선택
-        st.subheader("📰 포함할 뉴스 선택")
-        
-        selected_indices = []
-        for i, item in enumerate(st.session_state.newsletter_data['news_items']):
-            if st.checkbox(f"{item['title']} ({item['date']})", value=True, key=f"news_select_{i}"):
-                selected_indices.append(i)
-        
-        # 선택된 뉴스로 필터링
-        selected_news = [st.session_state.newsletter_data['news_items'][i] for i in selected_indices]
-        
-        if selected_news:
-            st.write(f"선택된 뉴스: {len(selected_news)}개")
-            
-            # 미리보기
-            if st.button("👀 뉴스레터 미리보기"):
-                html_content = create_html_newsletter(selected_news, custom_message)
-                st.components.v1.html(html_content, height=800, scrolling=True)
-            
-            # 선택된 뉴스를 세션에 저장
-            st.session_state.newsletter_data['selected_news'] = selected_news
-            st.session_state.newsletter_data['custom_message'] = custom_message
+    # 메인 액션 버튼들 (단순하고 직관적)
+    st.subheader("🎯 주요 작업")
     
-    elif menu == "👥 주소록 관리":
-        st.header("주소록 관리")
-        
-        # 주소록 자동 저장/불러오기 안내
-        col1, col2 = st.columns(2)
-        with col1:
-            st.info("💾 주소록은 자동으로 저장됩니다")
-        with col2:
-            if st.button("🔄 저장된 주소록 다시 불러오기"):
-                if load_address_book():
-                    st.success("저장된 주소록을 불러왔습니다!")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📰 뉴스 자동 수집", key="collect_news_main", help="최신 뉴스를 자동으로 수집합니다"):
+            with st.spinner("뉴스를 수집하는 중..."):
+                collected_news = collect_latest_news(force_refresh=False)
+                if collected_news:
+                    st.session_state.newsletter_data['news_items'] = collected_news
+                    st.success(f"✅ {len(collected_news)}개의 뉴스를 수집했습니다!")
                     st.rerun()
                 else:
-                    st.warning("저장된 주소록이 없습니다.")
-        
-        # 파일 업로드
-        uploaded_file = st.file_uploader("CSV 파일 업로드 (이름, 이메일 열 필요)", type=['csv'])
-        
-        if uploaded_file:
-            try:
-                df = pd.read_csv(uploaded_file)
-                st.session_state.newsletter_data['address_book'] = df
-                save_address_book()  # 자동 저장
-                st.success("주소록이 성공적으로 업로드되었습니다!")
+                    st.error("❌ 뉴스 수집에 실패했습니다. 잠시 후 다시 시도해주세요.")
+    
+    with col2:
+        if st.button("📝 뉴스레터 작성", key="create_newsletter_main", help="수집된 뉴스로 뉴스레터를 작성합니다"):
+            if not has_news:
+                st.error("❌ 먼저 뉴스를 수집해주세요!")
+            else:
+                # 뉴스레터 작성 섹션으로 이동
+                st.session_state.show_newsletter_creation = True
                 st.rerun()
-            except Exception as e:
-                st.error(f"파일 업로드 중 오류가 발생했습니다: {str(e)}")
+    
+    # 뉴스레터 작성 섹션 (조건부 표시)
+    if has_news and st.session_state.get('show_newsletter_creation', False):
+        st.write("---")
+        st.subheader("📝 뉴스레터 작성")
         
-        # 수동 입력
-        with st.expander("➕ 수동으로 연락처 추가"):
-            col1, col2 = st.columns(2)
-            with col1:
-                name = st.text_input("이름")
-            with col2:
-                email = st.text_input("이메일")
+        # AI 메시지 생성 버튼 (단순화)
+        col1, col2, col3 = st.columns(3)
+        
+        current_message = st.session_state.newsletter_data.get('custom_message', pick_contextual_message())
+        
+        with col1:
+            if st.button("🎯 오늘의 인사말", help="오늘 날짜에 맞는 인사말을 생성합니다"):
+                st.session_state.newsletter_data['custom_message'] = pick_contextual_message()
+                st.rerun()
+        
+        with col2:
+            if st.button("🤖 AI 인사말", help="AI가 맞춤형 인사말을 생성합니다"):
+                if COMPANY_CONFIG.get('openai_api_key'):
+                    with st.spinner("AI가 인사말을 생성 중..."):
+                        ai_message = generate_ai_message()
+                        st.session_state.newsletter_data['custom_message'] = ai_message
+                        st.success("✅ AI 인사말이 생성되었습니다!")
+                        st.rerun()
+                else:
+                    st.warning("⚠️ AI 기능을 사용하려면 OpenAI API 키가 필요합니다.")
+        
+        with col3:
+            if st.button("🔄 다시 생성", help="인사말을 다시 생성합니다"):
+                st.session_state.newsletter_data['custom_message'] = pick_contextual_message()
+                st.rerun()
+        
+        # 인사말 편집
+        custom_message = st.text_area(
+            "인사말 편집", 
+            value=current_message,
+            height=100,
+            help="생성된 인사말을 자유롭게 수정할 수 있습니다"
+        )
+        st.session_state.newsletter_data['custom_message'] = custom_message
+        
+        # 뉴스 선택 (간소화)
+        st.write("**포함할 뉴스 선택:**")
+        
+        selected_indices = []
+        news_items = st.session_state.newsletter_data['news_items']
+        
+        # 전체 선택/해제 버튼
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button("전체 선택"):
+                st.session_state.all_selected = True
+                st.rerun()
+        with col2:
+            if st.button("전체 해제"):
+                st.session_state.all_selected = False
+                st.rerun()
+        
+        # 뉴스 체크박스
+        all_selected = st.session_state.get('all_selected', True)
+        for i, item in enumerate(news_items):
+            if st.checkbox(f"{item['title']} ({item['date']})", value=all_selected, key=f"news_select_{i}"):
+                selected_indices.append(i)
+        
+        selected_news = [news_items[i] for i in selected_indices]
+        st.session_state.newsletter_data['selected_news'] = selected_news
+        
+        if selected_news:
+            st.success(f"✅ {len(selected_news)}개 뉴스가 선택되었습니다")
             
-            if st.button("추가"):
-                if name and email and validate_email(email):
-                    new_contact = pd.DataFrame({'이름': [name], '이메일': [email]})
-                    if st.session_state.newsletter_data['address_book'].empty:
-                        st.session_state.newsletter_data['address_book'] = new_contact
-                    else:
+            # 미리보기 및 발송 버튼
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("👀 미리보기", key="preview_main"):
+                    html_content = create_html_newsletter(selected_news, custom_message)
+                    st.components.v1.html(html_content, height=800, scrolling=True)
+            
+            with col2:
+                if st.button("📤 뉴스레터 발송", key="send_main", type="primary"):
+                    st.session_state.show_send_section = True
+                    st.rerun()
+    
+    # 발송 섹션 (조건부 표시)
+    if has_selected_news and st.session_state.get('show_send_section', False):
+        st.write("---")
+        st.subheader("📤 뉴스레터 발송")
+        
+        # 제목 입력
+        subject = st.text_input(
+            "이메일 제목", 
+            value=f"[{COMPANY_CONFIG['company_name']}] 법률 뉴스레터 - {datetime.now().strftime('%Y년 %m월 %d일')}",
+            help="발송될 이메일의 제목을 입력하세요"
+        )
+        
+        # 수신자 관리 (간소화)
+        st.write("**수신자 관리:**")
+        
+        all_emails = st.session_state.newsletter_data['address_book']['이메일'].tolist()
+        all_names = st.session_state.newsletter_data['address_book']['이름'].tolist()
+        
+        # 수신자 목록 표시
+        st.write(f"📧 총 {len(all_emails)}명의 수신자")
+        
+        with st.expander("수신자 목록 보기/편집"):
+            # 간단한 수신자 편집
+            for i, (name, email) in enumerate(zip(all_names, all_emails)):
+                col1, col2, col3 = st.columns([2, 3, 1])
+                with col1:
+                    st.text(name)
+                with col2:
+                    st.text(email)
+                with col3:
+                    if st.button("❌", key=f"remove_{i}", help="삭제"):
+                        st.session_state.newsletter_data['address_book'] = st.session_state.newsletter_data['address_book'].drop(index=i).reset_index(drop=True)
+                        save_address_book()
+                        st.rerun()
+            
+            # 새 수신자 추가
+            st.write("**새 수신자 추가:**")
+            new_col1, new_col2, new_col3 = st.columns([2, 3, 1])
+            with new_col1:
+                new_name = st.text_input("이름", key="new_name")
+            with new_col2:
+                new_email = st.text_input("이메일", key="new_email")
+            with new_col3:
+                if st.button("➕", key="add_new", help="추가"):
+                    if new_name and new_email and validate_email(new_email):
+                        new_contact = pd.DataFrame({'이름': [new_name], '이메일': [new_email]})
                         st.session_state.newsletter_data['address_book'] = pd.concat([
                             st.session_state.newsletter_data['address_book'], 
                             new_contact
                         ], ignore_index=True)
-                    save_address_book()  # 자동 저장
-                    st.success("연락처가 추가되었습니다!")
-                    st.rerun()
-                else:
-                    st.error("올바른 이름과 이메일을 입력해주세요.")
+                        save_address_book()
+                        st.success("✅ 새 수신자가 추가되었습니다!")
+                        st.rerun()
+                    else:
+                        st.error("❌ 올바른 이름과 이메일을 입력하세요!")
         
-        # 현재 주소록 표시
-        if not st.session_state.newsletter_data['address_book'].empty:
-            st.subheader(f"현재 주소록 ({len(st.session_state.newsletter_data['address_book'])}명)")
+        # 최종 발송 버튼
+        if subject and all_emails:
+            st.write("---")
             
-            # 주소록 편집 기능
-            edited_df = st.data_editor(
-                st.session_state.newsletter_data['address_book'],
-                num_rows="dynamic",
-                use_container_width=True
-            )
-            
-            if not edited_df.equals(st.session_state.newsletter_data['address_book']):
-                st.session_state.newsletter_data['address_book'] = edited_df
-                save_address_book()  # 자동 저장
-                st.success("주소록 변경사항이 저장되었습니다!")
-            
-            # 다운로드 버튼
-            csv = st.session_state.newsletter_data['address_book'].to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="📥 주소록 다운로드 (CSV)",
-                data=csv,
-                file_name=f"address_book_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
+            if st.button("🚀 최종 발송", key="final_send", type="primary", help=f"{len(all_emails)}명에게 뉴스레터를 발송합니다"):
+                with st.spinner(f"뉴스레터를 {len(all_emails)}명에게 발송 중..."):
+                    html_content = create_html_newsletter(
+                        st.session_state.newsletter_data['selected_news'],
+                        st.session_state.newsletter_data['custom_message']
+                    )
+                    
+                    sent_count, failed_emails = send_newsletter(
+                        all_emails,
+                        subject,
+                        html_content,
+                        st.session_state.newsletter_data['email_settings']
+                    )
+                    
+                    if sent_count > 0:
+                        st.success(f"🎉 {sent_count}명에게 성공적으로 발송되었습니다!")
+                        
+                        # 발송 완료 후 초기화
+                        st.session_state.show_newsletter_creation = False
+                        st.session_state.show_send_section = False
+                        
+                        # 발송 기록 저장
+                        if 'send_history' not in st.session_state:
+                            st.session_state.send_history = []
+                        
+                        st.session_state.send_history.append({
+                            'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                            'subject': subject,
+                            'recipients': sent_count,
+                            'status': 'success'
+                        })
+                        
+                        st.balloons()
+                    
+                    if failed_emails:
+                        st.error("❌ 일부 발송 실패:")
+                        for error in failed_emails[:3]:  # 처음 3개만 표시
+                            st.write(f"- {error}")
         else:
-            st.info("아직 등록된 주소록이 없습니다. CSV 파일을 업로드하거나 수동으로 추가해보세요.")
+            if not subject:
+                st.warning("⚠️ 이메일 제목을 입력해주세요")
+            if not all_emails:
+                st.warning("⚠️ 수신자가 없습니다")
     
-    elif menu == "📤 발송하기":
-        st.header("뉴스레터 발송")
+    # 하단 도움말
+    with st.expander("❓ 사용 도움말"):
+        st.write("""
+        **간단 사용법:**
+        1. **뉴스 자동 수집** 버튼을 눌러 최신 뉴스를 가져옵니다
+        2. **뉴스레터 작성** 버튼을 눌러 인사말을 생성하고 뉴스를 선택합니다
+        3. **미리보기**로 확인한 후 **뉴스레터 발송** 버튼을 누릅니다
+        4. 수신자를 확인하고 **최종 발송** 버튼을 누르면 완료됩니다
         
-        # 발송 전 체크리스트
-        email_configured = bool(st.session_state.newsletter_data['email_settings'])
-        has_news = bool(st.session_state.newsletter_data.get('selected_news', []))
-        has_addresses = not st.session_state.newsletter_data['address_book'].empty
-        
-        st.subheader("📋 발송 준비 상태")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.write("📧 이메일 설정")
-            st.success("✅ 자동 구성됨")
-        
-        with col2:
-            st.write("📰 뉴스레터")
-            if has_news:
-                st.success(f"✅ {len(st.session_state.newsletter_data.get('selected_news', []))}개 뉴스")
-            else:
-                st.error("❌ 뉴스레터 미작성")
-        
-        with col3:
-            st.write("👥 주소록")
-            if has_addresses:
-                st.success(f"✅ {len(st.session_state.newsletter_data['address_book'])}명")
-            else:
-                st.error("❌ 주소록 없음")
-        
-        if email_configured and has_news and has_addresses:
-            st.markdown('<div class="success-box">모든 준비가 완료되었습니다! 🎉</div>', 
-                       unsafe_allow_html=True)
-            
-            # 발송 설정
-            subject = st.text_input(
-                "이메일 제목", 
-                value=f"[{COMPANY_CONFIG['company_name']}] 법률 뉴스레터 - {datetime.now().strftime('%Y년 %m월 %d일')}"
-            )
-            
-            # 수신자 선택
-            all_emails = st.session_state.newsletter_data['address_book']['이메일'].tolist()
-            selected_emails = st.multiselect(
-                "수신자 선택 (전체 선택하려면 비워두세요)",
-                options=all_emails,
-                default=all_emails
-            )
-            
-            if not selected_emails:
-                selected_emails = all_emails
-            
-            st.write(f"📧 발송 대상: {len(selected_emails)}명")
-            
-            # 발송 미리보기
-            if st.button("👀 발송 전 최종 미리보기"):
-                html_content = create_html_newsletter(
-                    st.session_state.newsletter_data.get('selected_news', []),
-                    st.session_state.newsletter_data.get('custom_message', '')
-                )
-                st.components.v1.html(html_content, height=800, scrolling=True)
-            
-            # 발송 버튼
-            if st.button("🚀 뉴스레터 발송", type="primary"):
-                if subject:
-                    with st.spinner("뉴스레터를 발송 중입니다..."):
-                        html_content = create_html_newsletter(
-                            st.session_state.newsletter_data.get('selected_news', []),
-                            st.session_state.newsletter_data.get('custom_message', '')
-                        )
-                        
-                        sent_count, failed_emails = send_newsletter(
-                            selected_emails,
-                            subject,
-                            html_content,
-                            st.session_state.newsletter_data['email_settings']
-                        )
-                        
-                        if sent_count > 0:
-                            st.success(f"✅ {sent_count}명에게 성공적으로 발송되었습니다!")
-                            
-                            # 발송 기록 저장
-                            if 'send_history' not in st.session_state:
-                                st.session_state.send_history = []
-                            
-                            st.session_state.send_history.append({
-                                'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
-                                'subject': subject,
-                                'recipients': sent_count,
-                                'status': 'success'
-                            })
-                        
-                        if failed_emails:
-                            st.error("❌ 발송 실패:")
-                            for error in failed_emails:
-                                st.write(f"- {error}")
-                else:
-                    st.error("이메일 제목을 입력해주세요.")
-        else:
-            st.markdown('<div class="warning-box">발송하기 전에 모든 설정을 완료해주세요.</div>', 
-                       unsafe_allow_html=True)
-            
-            # 부족한 설정으로 이동하는 버튼들
-            if not has_news:
-                if st.button("📝 뉴스레터 작성하러 가기"):
-                    st.rerun()
-            
-            if not has_addresses:
-                if st.button("👥 주소록 관리하러 가기"):
-                    st.rerun()
+        **주요 특징:**
+        - 모든 설정이 미리 완료되어 있어 바로 사용 가능
+        - AI가 상황에 맞는 인사말을 자동 생성
+        - 한국 뉴스만 자동 필터링하여 수집
+        - 이메일 클라이언트에서 깨지지 않는 안정적인 디자인
+        - 주소록 자동 저장 및 관리
+        """)
 
 if __name__ == "__main__":
     main()
