@@ -3,3 +3,23 @@
 *.pyc
 __pycache__/
 newsletter_env/
+# API 키 및 민감한 정보
+.env
+.streamlit/secrets.toml
+address_book_auto_save.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
