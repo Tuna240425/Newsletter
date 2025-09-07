@@ -63,7 +63,7 @@ COMPANY_CONFIG = {
     'skip_smtp_test': True,
     
     # OpenAI API 설정 (보안을 위해 환경변수 사용)
-    'use_openai': False,  # True로 설정하면 OpenAI API 사용
+    'use_openai': True,  # True로 설정하면 OpenAI API 사용
     'openai_api_key': os.getenv('OPENAI_API_KEY', ''),  # 환경변수에서 읽어옴
 }
 
