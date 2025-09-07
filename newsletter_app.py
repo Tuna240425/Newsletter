@@ -14,13 +14,7 @@ import random
 import re
 import unicodedata
 from datetime import datetime, date
-try:
-    import openai
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-from dotenv import load_dotenv
-load_dotenv()  # .env 파일에서 환경변수 로드
+import openai
 import hashlib
 try:
     from zoneinfo import ZoneInfo  # Py>=3.9
@@ -39,9 +33,9 @@ COMPANY_CONFIG = {
     
     # 사무실 정보 (뉴스레터 하단에 표시)
     'office_info': {
-        'address': '서울시 송파구 법원로92, 806호 (문정동, 파트너스1)',
-        'phone': '02-3477-9650',
-        'website': 'https://www.limleelawfirm.com/',
+        'address': '서울시 강남구 테헤란로 123, ABC빌딩 10층',
+        'phone': '02-1234-5678',
+        'website': 'https://lshlawfirm.com',
         'business_hours': '평일 09:00-18:00'
     },
     
@@ -69,7 +63,7 @@ COMPANY_CONFIG = {
     'skip_smtp_test': True,
     
     # OpenAI API 설정 (보안을 위해 환경변수 사용)
-    'use_openai': True,  # True로 설정하면 OpenAI API 사용
+    'use_openai': False,  # True로 설정하면 OpenAI API 사용
     'openai_api_key': os.getenv('OPENAI_API_KEY', ''),  # 환경변수에서 읽어옴
 }
 
@@ -162,7 +156,7 @@ def generate_ai_message(topic="법률", tone="친근한"):
         조건:
         - 주제: {topic}
         - 톤: {tone}
-        - 길이: 3문장
+        - 길이: 1-2문장
         - 한국어로 작성
         - 법률사무소 특성에 맞게
         - 오늘 날짜: {datetime.now().strftime('%Y년 %m월 %d일 %A')}
@@ -553,13 +547,6 @@ def create_html_newsletter(news_items, custom_message=""):
             .office-info p {{
                 margin: 5px 0;
             }}
-            .unsubscribe {{
-                margin-top: 20px;
-                padding-top: 15px;
-                border-top: 1px solid #ddd;
-                font-size: 11px;
-                color: #999;
-            }}
         </style>
     </head>
     <body>
@@ -598,7 +585,13 @@ def create_html_newsletter(news_items, custom_message=""):
                 <p><strong>{COMPANY_CONFIG['footer_message']}</strong></p>
                 <p>본 메일은 법률정보 제공을 위해 발송되었습니다.</p>
                 
-                <p style="margin-top: 15px;">© 2025 {COMPANY_CONFIG['company_name']}. All rights reserved.</p>
+                <div class="unsubscribe">
+                    <p><strong>수신거부 안내</strong></p>
+                    <p>더 이상 뉴스레터 수신을 원하지 않으시면 <a href="https://forms.gle/YourGoogleFormID" style="color: #667eea;">여기를 클릭</a>하여 간단히 신청해주세요.</p>
+                    <p style="font-size: 10px; color: #aaa;">본 뉴스레터는 정보 제공 목적으로 발송되며, 법률 자문을 대체하지 않습니다.</p>
+                </div>
+                
+                <p style="margin-top: 15px;">© 2024 {COMPANY_CONFIG['company_name']}. All rights reserved.</p>
             </div>
         </div>
     </body>
@@ -815,7 +808,6 @@ def main():
     elif not OPENAI_AVAILABLE:
         st.sidebar.info("🤖 AI 기능: openai 모듈 미설치\n(pip install openai로 설치 가능)")
     
-    
     if menu == "🏠 홈":
         st.header("환영합니다! 👋")
         
@@ -958,13 +950,30 @@ def main():
                 st.rerun()
         
         with col3:
-            if COMPANY_CONFIG.get('use_openai') and st.button("🤖 AI 맞춤 메시지"):
-                with st.spinner("AI가 메시지를 생성하는 중..."):
-                    ai_message = generate_ai_message()
-                    st.session_state.current_message = ai_message
-                    st.markdown(f'<div class="ai-message-box">🤖 AI가 생성한 메시지: {ai_message}</div>', 
-                               unsafe_allow_html=True)
-                    st.rerun()
+            if st.button("🤖 AI 맞춤 메시지"):
+                # 상태 확인 및 디버깅 정보
+                if not OPENAI_AVAILABLE:
+                    st.error("❌ OpenAI 모듈이 설치되지 않았습니다.")
+                    st.info("설치 방법: pip install openai")
+                elif not COMPANY_CONFIG.get('use_openai'):
+                    st.warning("⚠️ AI 기능이 비활성화되어 있습니다.")
+                    st.info("상단 COMPANY_CONFIG에서 'use_openai': True로 설정하거나 사이드바에서 활성화하세요.")
+                elif not COMPANY_CONFIG.get('openai_api_key'):
+                    st.warning("⚠️ OpenAI API 키가 설정되지 않았습니다.")
+                    st.info("사이드바에서 API 키를 입력하거나 환경변수로 설정하세요.")
+                else:
+                    with st.spinner("AI가 메시지를 생성하는 중..."):
+                        ai_message = generate_ai_message()
+                        if ai_message != pick_contextual_message():
+                            st.session_state.current_message = ai_message
+                            st.success("✅ AI 메시지가 생성되었습니다!")
+                            st.markdown(f'<div class="ai-message-box">🤖 AI가 생성한 메시지: {ai_message}</div>', 
+                                       unsafe_allow_html=True)
+                            st.rerun()
+                        else:
+                            st.error("❌ AI 메시지 생성에 실패했습니다. 기본 메시지를 사용합니다.")
+                            st.session_state.current_message = ai_message
+                            st.rerun()
         
         # 기본 메시지 설정
         if "current_message" not in st.session_state:
