@@ -7,7 +7,7 @@ import os
 COMPANY_CONFIG = {
     # 회사 정보
     'company_name': '임앤리 법률사무소',
-    'company_email': 'lshlawfirm2@gmail.com',
+    'company_email': 'official.haedeun@gmail.com',
     'company_password': 'wsbn vanl ywza ochf',
     
     # 사무실 정보 (뉴스레터 하단에 표시)

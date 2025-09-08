@@ -22,7 +22,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# CSS 스타일링 (개선된 버전)
+# CSS 스타일링 (기존과 동일)
 st.markdown("""
 <style>
 .main-header {
@@ -78,6 +78,30 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# API 키 자동 로드 함수 추가
+def get_openai_api_key():
+    """API 키를 여러 소스에서 가져오기"""
+    import os
+    
+    # 1. 환경변수에서 먼저 확인
+    api_key = os.getenv('OPENAI_API_KEY')
+    if api_key:
+        return api_key, "환경변수"
+    
+    # 2. Streamlit Secrets에서 확인
+    try:
+        if hasattr(st, 'secrets') and 'OPENAI_API_KEY' in st.secrets:
+            return st.secrets['OPENAI_API_KEY'], "Streamlit Secrets"
+    except:
+        pass
+    
+    # 3. config에서 직접 설정된 값 확인
+    config_key = COMPANY_CONFIG.get('openai_api_key', '')
+    if config_key:
+        return config_key, "config.py"
+    
+    return None, None
+
 # 세션 상태 초기화
 def initialize_session_state():
     """세션 상태 초기화 함수"""
@@ -118,7 +142,7 @@ def main():
     # 사이드바에 시스템 상태 표시
     show_sidebar_status()
     
-    # OpenAI 설정 (사이드바)
+    # OpenAI 설정 (사이드바) - 개선된 버전
     setup_ai_configuration()
     
     # 메뉴별 처리
@@ -157,7 +181,7 @@ def show_sidebar_status():
     st.sidebar.metric("📝 뉴스레터", "✅ 작성됨" if newsletter_ready else "📝 미작성")
 
 def setup_ai_configuration():
-    """AI 설정 구성"""
+    """AI 설정 구성 - 개선된 자동 로드 버전"""
     try:
         from openai import OpenAI
         OPENAI_AVAILABLE = True
@@ -165,29 +189,63 @@ def setup_ai_configuration():
         OPENAI_AVAILABLE = False
     
     st.sidebar.markdown("---")
+    st.sidebar.subheader("🤖 AI 설정")
     
-    if OPENAI_AVAILABLE and not COMPANY_CONFIG.get('openai_api_key'):
+    if not OPENAI_AVAILABLE:
+        st.sidebar.error("OpenAI 라이브러리가 설치되지 않았습니다.")
+        st.sidebar.info("설치: `pip install openai`")
+        return
+    
+    # API 키 자동 로드 시도
+    api_key, source = get_openai_api_key()
+    
+    if api_key:
+        # API 키가 자동으로 로드된 경우
+        COMPANY_CONFIG['openai_api_key'] = api_key
+        COMPANY_CONFIG['use_openai'] = True
+        
+        # 성공 메시지와 소스 표시
+        st.sidebar.success(f"✅ API 키 자동 로드됨")
+        st.sidebar.text(f"소스: {source}")
+        
+        # API 키 일부만 표시 (보안)
+        masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "설정됨"
+        st.sidebar.text(f"키: {masked_key}")
+        
+        # AI 사용 여부 토글
+        use_ai = st.sidebar.checkbox("AI 메시지 생성 사용", value=True)
+        COMPANY_CONFIG['use_openai'] = use_ai
+        
+        if use_ai:
+            st.sidebar.text("🤖 AI 메시지 생성 활성화")
+        
+    else:
+        # API 키가 없는 경우 기존 방식대로 입력받기
+        st.sidebar.warning("API 키가 설정되지 않았습니다.")
+        
         with st.sidebar.expander("🤖 AI 설정 (선택사항)"):
-            st.info("💡 상단 COMPANY_CONFIG에서 미리 설정하면 이 과정을 생략할 수 있습니다")
+            st.info("💡 .env 파일이나 환경변수로 설정하면 매번 입력할 필요가 없습니다")
+            
+            # 설정 방법 안내
+            st.markdown("""
+            **자동 설정 방법:**
+            1. `.env` 파일에 `OPENAI_API_KEY=your_key` 추가
+            2. 환경변수로 설정: `export OPENAI_API_KEY=your_key`
+            3. config.py에서 직접 설정
+            """)
+            
             use_ai = st.checkbox("OpenAI API 사용", value=COMPANY_CONFIG.get('use_openai', False))
             if use_ai:
-                api_key = st.text_input("OpenAI API 키", type="password", 
-                                       value=COMPANY_CONFIG.get('openai_api_key', ''))
-                if api_key:
+                manual_api_key = st.text_input("OpenAI API 키", type="password", 
+                                             value=COMPANY_CONFIG.get('openai_api_key', ''))
+                if manual_api_key:
                     COMPANY_CONFIG['use_openai'] = True
-                    COMPANY_CONFIG['openai_api_key'] = api_key
+                    COMPANY_CONFIG['openai_api_key'] = manual_api_key
                     st.success("✅ AI 메시지 생성 활성화")
                 else:
                     st.info("API 키를 입력하면 AI가 맞춤형 메시지를 생성합니다")
             else:
                 COMPANY_CONFIG['use_openai'] = False
-    elif OPENAI_AVAILABLE and COMPANY_CONFIG.get('openai_api_key'):
-        if COMPANY_CONFIG.get('use_openai'):
-            st.sidebar.success("🤖 AI 메시지 생성 활성화됨")
-        else:
-            st.sidebar.info("🤖 AI 설정 완료 (비활성화)")
-    elif not OPENAI_AVAILABLE:
-        st.sidebar.info("🤖 AI 기능: openai 모듈 미설치\n(pip install openai로 설치 가능)")
 
 def show_home():
     """홈 페이지"""
@@ -196,6 +254,12 @@ def show_home():
     # 자동 설정 상태 표시
     st.markdown('<div class="auto-news-box">✅ 이메일 설정이 자동으로 구성되었습니다!</div>', 
                unsafe_allow_html=True)
+    
+    # API 키 자동 로드 상태 표시
+    api_key, source = get_openai_api_key()
+    if api_key:
+        st.markdown(f'<div class="auto-news-box">✅ OpenAI API 키가 자동으로 로드되었습니다! (소스: {source})</div>', 
+                   unsafe_allow_html=True)
     
     # 시스템 소개
     col1, col2 = st.columns([2, 1])
@@ -214,7 +278,7 @@ def show_home():
         
         **개선된 기능:**
         - 🎨 심플하고 전문적인 디자인
-        - 🤖 AI 맞춤형 메시지 생성
+        - 🤖 AI 맞춤형 메시지 생성 (자동 API 키 로드)
         - 💾 주소록 자동 저장/불러오기
         - 📅 정확한 뉴스 날짜 표시
         - 🏢 사무실 정보 및 수신거부 안내
@@ -251,7 +315,8 @@ def show_home():
         smtp_configured = bool(st.session_state.newsletter_data['email_settings'])
         st.metric("📧 이메일", "✅" if smtp_configured else "❌")
     with col4:
-        ai_status = "✅" if COMPANY_CONFIG.get('use_openai') else "🔒"
+        ai_key, _ = get_openai_api_key()
+        ai_status = "✅" if ai_key and COMPANY_CONFIG.get('use_openai') else "🔒"
         st.metric("🤖 AI 메시지", ai_status)
     
     # 최근 활동 (선택사항)
@@ -396,7 +461,9 @@ def show_newsletter_creation():
     
     with col3:
         if st.button("🤖 AI 맞춤 메시지"):
-            # AI 기능 가용성 확인
+            # AI 기능 가용성 확인 - 개선된 버전
+            api_key, source = get_openai_api_key()
+            
             if not check_ai_availability():
                 return
             
@@ -444,7 +511,7 @@ def show_newsletter_creation():
     
     selected_indices = []
     for i, item in enumerate(st.session_state.newsletter_data['news_items']):
-        default_selected = True if i < 5 else False  # 처음 5개는 기본 선택
+        default_selected = i < 5  # 처음 5개는 기본 선택
         if st.checkbox(f"{item['title']} ({item['date']})", 
                       value=st.session_state.get(f"news_select_{i}", default_selected), 
                       key=f"news_select_{i}"):
@@ -470,7 +537,7 @@ def show_newsletter_creation():
         st.warning("발송할 뉴스를 선택해주세요.")
 
 def check_ai_availability():
-    """AI 기능 가용성 확인"""
+    """AI 기능 가용성 확인 - 개선된 버전"""
     try:
         from openai import OpenAI
         OPENAI_AVAILABLE = True
@@ -481,12 +548,15 @@ def check_ai_availability():
         st.markdown('<div class="error-box">❌ OpenAI 모듈이 설치되지 않았습니다.<br>설치 방법: pip install openai</div>', 
                    unsafe_allow_html=True)
         return False
-    elif not COMPANY_CONFIG.get('use_openai'):
-        st.markdown('<div class="warning-box">⚠️ AI 기능이 비활성화되어 있습니다.<br>상단 COMPANY_CONFIG에서 \'use_openai\': True로 설정하거나 사이드바에서 활성화하세요.</div>', 
+    
+    api_key, source = get_openai_api_key()
+    
+    if not COMPANY_CONFIG.get('use_openai'):
+        st.markdown('<div class="warning-box">⚠️ AI 기능이 비활성화되어 있습니다.<br>사이드바에서 활성화하세요.</div>', 
                    unsafe_allow_html=True)
         return False
-    elif not COMPANY_CONFIG.get('openai_api_key'):
-        st.markdown('<div class="warning-box">⚠️ OpenAI API 키가 설정되지 않았습니다.<br>사이드바에서 API 키를 입력하거나 환경변수로 설정하세요.</div>', 
+    elif not api_key:
+        st.markdown('<div class="warning-box">⚠️ OpenAI API 키가 설정되지 않았습니다.<br>.env 파일, 환경변수, 또는 사이드바에서 설정하세요.</div>', 
                    unsafe_allow_html=True)
         return False
     return True
