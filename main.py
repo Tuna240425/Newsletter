@@ -772,13 +772,16 @@ def show_newsletter_sending():
                         else:
                             st.error("이메일 제목을 입력해주세요.")
                 
-                # 실제 발송 버튼
+                # 실제 발송 버튼 - 개선된 버전
                 st.write("---")
-                if st.button("🚀 뉴스레터 발송", type="primary", use_container_width=True):
-                    if subject:
-                        # 발송 확인
-                        confirm = st.checkbox(f"정말로 {len(selected_emails)}명에게 발송하시겠습니까?")
-                        if confirm:
+                
+                # 발송 확인을 먼저 받고 버튼 활성화
+                confirm_send = st.checkbox(f"정말로 {len(selected_emails)}명에게 발송하시겠습니까?", key="confirm_send")
+                
+                # 확인 체크박스가 선택되었을 때만 발송 버튼 활성화
+                if confirm_send:
+                    if st.button("🚀 지금 발송하기", type="primary", use_container_width=True):
+                        if subject:
                             with st.spinner("뉴스레터를 발송 중입니다..."):
                                 html_content = create_html_newsletter(
                                     st.session_state.newsletter_data.get('selected_news', []),
@@ -805,15 +808,21 @@ def show_newsletter_sending():
                                         'recipients': sent_count,
                                         'status': 'success'
                                     })
+                                    
+                                    # 발송 완료 후 체크박스 초기화
+                                    st.session_state.confirm_send = False
+                                    st.rerun()
                                 
                                 if failed_emails:
                                     st.error("❌ 발송 실패:")
                                     for error in failed_emails:
                                         st.write(f"- {error}")
                         else:
-                            st.info("위의 체크박스를 선택하여 발송을 확인해주세요.")
-                    else:
-                        st.error("이메일 제목을 입력해주세요.")
+                            st.error("이메일 제목을 입력해주세요.")
+                else:
+                    # 체크박스가 선택되지 않았을 때는 비활성화된 버튼 표시
+                    st.button("🚀 뉴스레터 발송", disabled=True, use_container_width=True)
+                    st.info("📋 위의 체크박스를 선택하면 발송 버튼이 활성화됩니다.")
             else:
                 st.error("유효한 이메일 주소가 없습니다.")
         else:
